@@ -94,27 +94,49 @@ class CognitoSetUserPoolMfaConfigIntegrationTest {
 
     @Test
     @Order(5)
-    void omittingMfaConfigurationLeavesTheExistingModeAlone() throws Exception {
-        JsonNode set = cognitoJson("SetUserPoolMfaConfig", """
+    void omittingMfaConfigurationWithAFactorIsRejected() {
+        // Measured: an absent MfaConfiguration means OFF, not "leave the mode alone", so
+        // sending a factor alongside it is turning MFA off and configuring it at once.
+        String body = cognitoAction("SetUserPoolMfaConfig", """
                 {"UserPoolId":"%s","SoftwareTokenMfaConfiguration":{"Enabled":false}}
-                """.formatted(poolId));
-        assertEquals("ON", set.path("MfaConfiguration").asText());
-        assertEquals(false, set.path("SoftwareTokenMfaConfiguration").path("Enabled").asBoolean());
+                """.formatted(poolId))
+                .then().statusCode(400).extract().asString();
+        assertTrue(body.contains("InvalidParameterException"), body);
+        assertTrue(body.contains("can't turn off MFA and configure an MFA together"), body);
     }
 
     @Test
     @Order(6)
+    void omittingMfaConfigurationEntirelyResetsThePoolToOff() throws Exception {
+        // The pool is ON with a software-token factor at this point. Sending only the
+        // pool id resets it: the live service answers OFF and drops the factor member.
+        JsonNode set = cognitoJson("SetUserPoolMfaConfig", """
+                {"UserPoolId":"%s"}
+                """.formatted(poolId));
+        assertEquals("OFF", set.path("MfaConfiguration").asText());
+        assertTrue(set.path("SoftwareTokenMfaConfiguration").isMissingNode(),
+                "turning MFA off drops the factor configuration with it");
+
+        JsonNode got = cognitoJson("GetUserPoolMfaConfig", """
+                {"UserPoolId":"%s"}
+                """.formatted(poolId));
+        assertEquals("OFF", got.path("MfaConfiguration").asText());
+        assertTrue(got.path("SoftwareTokenMfaConfiguration").isMissingNode());
+    }
+
+    @Test
+    @Order(7)
     void invalidMfaConfigurationIsRejected() {
         String body = cognitoAction("SetUserPoolMfaConfig", """
                 {"UserPoolId":"%s","MfaConfiguration":"SOMETIMES"}
                 """.formatted(poolId))
                 .then().statusCode(400).extract().asString();
         assertTrue(body.contains("InvalidParameterException"), body);
-        assertTrue(body.contains("Member must satisfy enum value set"), body);
+        assertTrue(body.contains("Member must satisfy enum value set: [OPTIONAL, OFF, ON]"), body);
     }
 
     @Test
-    @Order(7)
+    @Order(8)
     void unknownPoolIsResourceNotFound() {
         String body = cognitoAction("SetUserPoolMfaConfig", """
                 {"UserPoolId":"ap-southeast-1_nosuchpool","MfaConfiguration":"OFF"}
@@ -124,7 +146,7 @@ class CognitoSetUserPoolMfaConfigIntegrationTest {
     }
 
     @Test
-    @Order(8)
+    @Order(9)
     void cleanup_deletePool() {
         cognitoAction("DeleteUserPool", """
                 {"UserPoolId":"%s"}

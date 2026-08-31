@@ -333,16 +333,27 @@ public class CognitoService implements ResourceProvider {
     public UserPool setUserPoolMfaConfig(String id, String mfaConfiguration,
                                          Boolean softwareTokenMfaEnabled) {
         UserPool pool = describeUserPool(id);
-        if (mfaConfiguration != null) {
-            if (!List.of("OFF", "ON", "OPTIONAL").contains(mfaConfiguration)) {
-                throw new AwsException("InvalidParameterException",
-                        "1 validation error detected: Value '" + mfaConfiguration
-                                + "' at 'mfaConfiguration' failed to satisfy constraint: "
-                                + "Member must satisfy enum value set: [ON, OFF, OPTIONAL]", 400);
-            }
-            pool.setMfaConfiguration(mfaConfiguration);
+        // An absent MfaConfiguration means OFF, not "leave the current mode alone":
+        // measured against the live service, which resets a pool that was OPTIONAL back
+        // to OFF when the member is omitted.
+        String mode = mfaConfiguration != null ? mfaConfiguration : "OFF";
+        if (!List.of("OPTIONAL", "OFF", "ON").contains(mode)) {
+            throw new AwsException("InvalidParameterException",
+                    "1 validation error detected: Value '" + mode
+                            + "' at 'mfaConfiguration' failed to satisfy constraint: "
+                            + "Member must satisfy enum value set: [OPTIONAL, OFF, ON]", 400);
         }
-        if (softwareTokenMfaEnabled != null) {
+        if ("OFF".equals(mode) && softwareTokenMfaEnabled != null) {
+            throw new AwsException("InvalidParameterException",
+                    "Invalid MFA configuration given, can't turn off MFA and configure an "
+                            + "MFA together.", 400);
+        }
+        pool.setMfaConfiguration(mode);
+        if ("OFF".equals(mode)) {
+            // Turning MFA off drops the factor configuration with it — the live service
+            // answers OFF alone afterwards, with no SoftwareTokenMfaConfiguration member.
+            pool.setSoftwareTokenMfaEnabled(null);
+        } else if (softwareTokenMfaEnabled != null) {
             pool.setSoftwareTokenMfaEnabled(softwareTokenMfaEnabled);
         }
         poolStore.put(id, pool);
