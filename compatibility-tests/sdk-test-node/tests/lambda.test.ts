@@ -241,3 +241,72 @@ describe('Lambda Publish flag', () => {
     expect((listed.Versions ?? []).map((v) => v.Version).sort()).toEqual(['$LATEST', '1', '2']);
   });
 });
+
+describe('Lambda version deletion', () => {
+  let lambda: LambdaClient;
+  let fnName: string;
+
+  const versions = async () => {
+    const r = await lambda.send(new ListVersionsByFunctionCommand({ FunctionName: fnName }));
+    return (r.Versions ?? []).map((v) => v.Version).sort();
+  };
+
+  beforeAll(async () => {
+    lambda = makeClient(LambdaClient);
+    fnName = `test-delver-${uniqueName()}`;
+
+    await lambda.send(new CreateFunctionCommand({
+      FunctionName: fnName,
+      Runtime: 'nodejs20.x',
+      Role: `arn:aws:iam::${ACCOUNT}:role/lambda-role`,
+      Handler: 'index.handler',
+      Code: { ZipFile: buildMinimalZip('index.js', Buffer.from('exports.handler = async () => 1;')) },
+    }));
+    await lambda.send(new PublishVersionCommand({ FunctionName: fnName }));
+    await lambda.send(new UpdateFunctionCodeCommand({
+      FunctionName: fnName,
+      ZipFile: buildMinimalZip('index.js', Buffer.from('exports.handler = async () => 2;')),
+    }));
+    await lambda.send(new PublishVersionCommand({ FunctionName: fnName }));
+  });
+
+  afterAll(async () => {
+    await lambda.send(new DeleteFunctionCommand({ FunctionName: fnName })).catch(() => {});
+  });
+
+  it('should delete only the qualified version, leaving the function intact', async () => {
+    expect(await versions()).toEqual(['$LATEST', '1', '2']);
+
+    await lambda.send(new DeleteFunctionCommand({ FunctionName: fnName, Qualifier: '2' }));
+
+    // The function survives — before this was fixed, the whole function was deleted.
+    const fn = await lambda.send(new GetFunctionCommand({ FunctionName: fnName }));
+    expect(fn.Configuration?.FunctionName).toBe(fnName);
+    expect(await versions()).toEqual(['$LATEST', '1']);
+  });
+
+  it('should refuse to delete $LATEST by qualifier', async () => {
+    await expect(
+      lambda.send(new DeleteFunctionCommand({ FunctionName: fnName, Qualifier: '$LATEST' }))
+    ).rejects.toThrow(/cannot be deleted without deleting the function/);
+    expect(await versions()).toEqual(['$LATEST', '1']);
+  });
+
+  it('should refuse to delete a version an alias references', async () => {
+    await lambda.send(new CreateAliasCommand({
+      FunctionName: fnName,
+      Name: 'pinned',
+      FunctionVersion: '1',
+    }));
+
+    await expect(
+      lambda.send(new DeleteFunctionCommand({ FunctionName: fnName, Qualifier: '1' }))
+    ).rejects.toThrow(/aliases reference it/);
+    expect(await versions()).toEqual(['$LATEST', '1']);
+  });
+
+  it('should treat a version that does not exist as a no-op', async () => {
+    await lambda.send(new DeleteFunctionCommand({ FunctionName: fnName, Qualifier: '99' }));
+    expect(await versions()).toEqual(['$LATEST', '1']);
+  });
+});
