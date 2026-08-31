@@ -25,6 +25,7 @@ import java.util.Base64;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * Business logic for Lambda Layer management.
@@ -33,6 +34,18 @@ import java.util.Map;
 public class LambdaLayerService {
 
     private static final Logger LOG = Logger.getLogger(LambdaLayerService.class);
+
+    /**
+     * Arn constraint GetLayerVersionByArn enforces. Taken from the live service's own
+     * ValidationException rather than the API reference, which publishes a laxer pattern and
+     * omits the AWS-managed {@code awslayer} form entirely.
+     */
+    private static final String LAYER_VERSION_ARN_PATTERN =
+            "((arn:(aws[a-zA-Z-]*)?:lambda:(eusc-)?[a-z]{2}((-gov)|(-iso([a-z]?)))?-[a-z]+-\\d{1}"
+                    + ":\\d{12}:layer:[a-zA-Z0-9-_]+:[0-9]+)"
+                    + "|(arn:[a-zA-Z0-9-]+:lambda:::awslayer:[a-zA-Z0-9-_]+))";
+    private static final Pattern LAYER_VERSION_ARN = Pattern.compile(LAYER_VERSION_ARN_PATTERN);
+    private static final int MAX_LAYER_VERSION_ARN_LENGTH = 140;
 
     private final LambdaLayerStore layerStore;
     private final ZipExtractor zipExtractor;
@@ -195,6 +208,32 @@ public class LambdaLayerService {
             LOG.debugv("Could not delete stored layer archive for {0} v{1}: {2}",
                     lv.getLayerName(), lv.getVersion(), e.getMessage());
         }
+    }
+
+    /**
+     * GetLayerVersionByArn. Arn is validated before lookup, so a malformed value is a 400
+     * ValidationException and a well-formed but absent one a 404 — both as the live service
+     * answers them.
+     */
+    public LambdaLayerVersion getLayerVersionByArn(String layerVersionArn) {
+        if (layerVersionArn == null || layerVersionArn.isEmpty()) {
+            throw new AwsException("ValidationException",
+                    "1 validation error detected: Value null at 'arn' failed to satisfy constraint: "
+                            + "Member must not be null", 400);
+        }
+        if (layerVersionArn.length() > MAX_LAYER_VERSION_ARN_LENGTH
+                || !LAYER_VERSION_ARN.matcher(layerVersionArn).matches()) {
+            throw new AwsException("ValidationException",
+                    "1 validation error detected: Value '" + layerVersionArn + "' at 'arn' failed to satisfy"
+                            + " constraint: Member must satisfy regular expression pattern: "
+                            + LAYER_VERSION_ARN_PATTERN, 400);
+        }
+        LambdaLayerVersion lv = resolveLayerByArn(layerVersionArn);
+        if (lv == null) {
+            throw new AwsException("ResourceNotFoundException",
+                    "The resource you requested does not exist.", 404);
+        }
+        return lv;
     }
 
     /**

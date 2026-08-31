@@ -14,6 +14,7 @@ import jakarta.ws.rs.POST;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.HttpHeaders;
 import jakarta.ws.rs.core.MediaType;
@@ -31,11 +32,14 @@ import java.util.Map;
  * GetLayerVersion:      GET    /2018-10-31/layers/{LayerName}/versions/{VersionNumber}
  * DeleteLayerVersion:   DELETE /2018-10-31/layers/{LayerName}/versions/{VersionNumber}
  * ListLayers:           GET    /2018-10-31/layers
+ * GetLayerVersionByArn: GET    /2018-10-31/layers?find=LayerVersion&Arn={arn}
  */
 @Path("/2018-10-31")
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
 public class LambdaLayerController {
+
+    private static final String FIND_LAYER_VERSION = "LayerVersion";
 
     private final ObjectMapper objectMapper;
     private final LambdaLayerService layerService;
@@ -96,9 +100,23 @@ public class LambdaLayerController {
         return Response.noContent().build();
     }
 
+    /**
+     * ListLayers, and GetLayerVersionByArn when {@code find=LayerVersion}. AWS gives the two
+     * actions the same method and path, and JAX-RS cannot route on a query parameter. The match
+     * is case-sensitive; any other value is a ListLayers call.
+     */
     @GET
     @Path("/layers")
-    public Response listLayers(@Context HttpHeaders headers) {
+    public Response listLayers(@QueryParam("find") String find,
+                               @QueryParam("Arn") String arn,
+                               @Context HttpHeaders headers,
+                               @Context UriInfo uriInfo) {
+        if (FIND_LAYER_VERSION.equals(find)) {
+            LambdaLayerVersion lv = layerService.getLayerVersionByArn(arn);
+            // The layer's own region, not the caller's: tasksLocation resolves the bucket from it.
+            String layerRegion = AwsArnUtils.parse(lv.getLayerVersionArn()).region();
+            return Response.ok(buildLayerVersionResponse(lv, layerRegion, uriInfo)).build();
+        }
         String region = regionResolver.resolveRegion(headers);
         List<LambdaLayerVersion> layers = layerService.listLayers(region);
         ObjectNode root = objectMapper.createObjectNode();
