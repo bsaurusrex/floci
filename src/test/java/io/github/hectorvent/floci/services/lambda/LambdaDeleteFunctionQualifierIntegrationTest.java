@@ -13,6 +13,7 @@ import java.util.zip.ZipOutputStream;
 
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.containsInAnyOrder;
+import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 
 /**
@@ -117,6 +118,31 @@ class LambdaDeleteFunctionQualifierIntegrationTest {
             .statusCode(400)
             .body("__type", equalTo("InvalidParameterValueException"))
             .body("message", equalTo("Deletion of aliases is not currently supported."));
+    }
+
+    @Test
+    @Order(3)
+    void nonAsciiQualifierIsRejectedByThePattern() {
+        // Character.isDigit accepts non-ASCII decimal digits, so a full-width or Arabic-Indic
+        // digit would otherwise be read as a version number and answered with a silent 204.
+        // The live service pattern-validates the qualifier first; measured on GetFunction,
+        // which enforces the same constraint.
+        for (String qualifier : new String[] {"\uFF13", "\u0663"}) {
+            given()
+                .queryParam("Qualifier", qualifier)
+            .when()
+                .delete("/2015-03-31/functions/" + FN)
+            .then()
+                .statusCode(400)
+                .body("__type", equalTo("ValidationException"))
+                .body("message", containsString("at 'qualifier' failed to satisfy constraint"));
+        }
+
+        given()
+        .when()
+            .get("/2015-03-31/functions/" + FN + "/versions")
+        .then()
+            .body("Versions.Version", containsInAnyOrder("$LATEST", "1", "2", "3"));
     }
 
     @Test

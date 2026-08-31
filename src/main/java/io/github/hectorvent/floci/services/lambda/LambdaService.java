@@ -57,6 +57,14 @@ import java.util.regex.Pattern;
 public class LambdaService implements ResourceProvider {
 
     private static final Logger LOG = Logger.getLogger(LambdaService.class);
+
+    /**
+     * Qualifier constraint the live service enforces, taken from its own ValidationException
+     * rather than the API reference, which publishes a laxer pattern. Notably it is ASCII-only,
+     * so a non-ASCII digit is rejected here rather than being read as a version number.
+     */
+    private static final String QUALIFIER_PATTERN = "\\$(LATEST(\\.PUBLISHED)?)|[a-zA-Z0-9-_$]+";
+    private static final Pattern QUALIFIER = Pattern.compile(QUALIFIER_PATTERN);
     private static final Pattern EFS_ACCESS_POINT_ARN = Pattern.compile(
             "^arn:aws[a-zA-Z-]*:elasticfilesystem:(?:eusc-)?[a-z]{2}"
                     + "(?:(?:-gov)|(?:-iso(?:b)?))?-[a-z]+-\\d:"
@@ -731,12 +739,18 @@ public class LambdaService implements ResourceProvider {
      * conflict, and a version that does not exist is a silent success rather than a 404.
      */
     private void deleteFunctionVersion(String region, String functionName, String qualifier) {
+        if (!QUALIFIER.matcher(qualifier).matches()) {
+            throw new AwsException("ValidationException",
+                    "1 validation error detected: Value '" + qualifier + "' at 'qualifier' failed"
+                            + " to satisfy constraint: Member must satisfy regular expression"
+                            + " pattern: " + QUALIFIER_PATTERN, 400);
+        }
         LambdaFunction fn = getFunction(region, functionName);
         if ("$LATEST".equals(qualifier)) {
             throw new AwsException("InvalidParameterValueException",
                     "$LATEST version cannot be deleted without deleting the function.", 400);
         }
-        if (!qualifier.chars().allMatch(Character::isDigit)) {
+        if (!qualifier.chars().allMatch(c -> c >= '0' && c <= '9')) {
             // A non-numeric qualifier names an alias, which the live service refuses to
             // resolve here rather than deleting the version behind it.
             throw new AwsException("InvalidParameterValueException",
