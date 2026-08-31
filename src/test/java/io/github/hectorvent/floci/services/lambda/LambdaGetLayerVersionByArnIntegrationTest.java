@@ -207,6 +207,35 @@ class LambdaGetLayerVersionByArnIntegrationTest {
     }
 
     @Test
+    @Order(7)
+    void arnInAnotherPartitionIsRejected() throws Exception {
+        String arn = publishLayer();
+        // Same account, region, name and version - only the partition differs. Measured against
+        // the live service, which answers InvalidParameterValueException rather than resolving.
+        for (String partition : new String[] {"aws-cn", "aws-us-gov", "aws-iso"}) {
+            given()
+                .queryParam("find", "LayerVersion")
+                .queryParam("Arn", arn.replaceFirst("^arn:aws:", "arn:" + partition + ":"))
+            .when()
+                .get("/2018-10-31/layers")
+            .then()
+                .statusCode(400)
+                .body("__type", equalTo("InvalidParameterValueException"))
+                .body("message", containsString("Invalid layer version arn:" + partition + ":"));
+        }
+
+        // control: the same ARN in the aws partition still resolves
+        given()
+            .queryParam("find", "LayerVersion")
+            .queryParam("Arn", arn)
+        .when()
+            .get("/2018-10-31/layers")
+        .then()
+            .statusCode(200)
+            .body("LayerVersionArn", equalTo(arn));
+    }
+
+    @Test
     @Order(8)
     void listLayersStillWorksWithoutFind() throws Exception {
         publishLayer();

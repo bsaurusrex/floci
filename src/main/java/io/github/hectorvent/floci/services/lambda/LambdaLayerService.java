@@ -232,6 +232,15 @@ public class LambdaLayerService {
         // ARN naming another account would otherwise resolve to the caller's same-named layer.
         // No layer here can be shared cross-account (layer permissions are unimplemented), so a
         // foreign account is always a miss; this is where sharing would hook in if that changes.
+        // resolveLayerByArn also drops the partition, so an ARN naming another one would
+        // otherwise resolve to the local layer under a foreign-partition ARN. Floci emulates
+        // the aws partition; the live service rejects the others outright.
+        AwsArnUtils.Arn parsed = AwsArnUtils.parse(layerVersionArn);
+        if (parsed.partition() != null && !parsed.partition().isEmpty()
+                && !"aws".equals(parsed.partition())) {
+            throw new AwsException("InvalidParameterValueException",
+                    "Invalid layer version " + layerVersionArn, 400);
+        }
         String requestedAccount = AwsArnUtils.accountOrDefault(layerVersionArn, null);
         if (requestedAccount != null && !requestedAccount.equals(regionResolver.getAccountId())) {
             throw new AwsException("ResourceNotFoundException",
