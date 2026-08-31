@@ -11,14 +11,18 @@ import io.github.hectorvent.floci.services.s3.S3Service;
 import io.github.hectorvent.floci.services.s3.model.S3Object;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 import org.jboss.logging.Logger;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
@@ -52,8 +56,10 @@ public class LambdaLayerService {
     private static final int MAX_LAYER_VERSION_ARN_LENGTH = 140;
     private static final int MAX_ITEMS_LIMIT = 50;
 
-    /** Tag identifying a Marker as one Floci issued; see {@link #encodeMarker}. */
-    private static final String MARKER_PREFIX = "floci:layer-page:";
+    private static final char MARKER_SEPARATOR = '.';
+
+    /** Signing key for pagination markers, per process; see {@link #encodeMarker}. */
+    private static final byte[] MARKER_KEY = newMarkerKey();
 
     private static final List<String> COMPATIBLE_ARCHITECTURES = List.of("x86_64", "arm64");
 
@@ -326,13 +332,15 @@ public class LambdaLayerService {
 
     /**
      * The live service's Marker is an encrypted token it rejects when it did not issue it.
-     * Floci cannot reproduce the token itself, so it tags its own and rejects anything that
-     * does not carry the tag, which is what makes an arbitrary string a 400 rather than a
-     * silently empty page.
+     * Floci signs the cursor instead, with a key generated at startup: a fabricated or edited
+     * marker fails the check, which is what makes an arbitrary string a 400 rather than a
+     * silently skipped or empty page. A marker from an earlier run is stale for the same
+     * reason, matching a client that replays an expired token against AWS.
      */
     private static String encodeMarker(String cursor) {
+        String signed = cursor + MARKER_SEPARATOR + sign(cursor);
         return Base64.getUrlEncoder().withoutPadding()
-                .encodeToString((MARKER_PREFIX + cursor).getBytes(StandardCharsets.UTF_8));
+                .encodeToString(signed.getBytes(StandardCharsets.UTF_8));
     }
 
     private static String decodeMarker(String marker) {
@@ -345,10 +353,33 @@ public class LambdaLayerService {
         } catch (IllegalArgumentException e) {
             throw invalidPaginationKey();
         }
-        if (!decoded.startsWith(MARKER_PREFIX)) {
+        int separator = decoded.lastIndexOf(MARKER_SEPARATOR);
+        if (separator < 0) {
             throw invalidPaginationKey();
         }
-        return decoded.substring(MARKER_PREFIX.length());
+        String cursor = decoded.substring(0, separator);
+        byte[] presented = decoded.substring(separator + 1).getBytes(StandardCharsets.UTF_8);
+        if (!MessageDigest.isEqual(presented, sign(cursor).getBytes(StandardCharsets.UTF_8))) {
+            throw invalidPaginationKey();
+        }
+        return cursor;
+    }
+
+    private static String sign(String cursor) {
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(MARKER_KEY, "HmacSHA256"));
+            return Base64.getUrlEncoder().withoutPadding()
+                    .encodeToString(mac.doFinal(cursor.getBytes(StandardCharsets.UTF_8)));
+        } catch (GeneralSecurityException e) {
+            throw new IllegalStateException("HmacSHA256 is required to paginate layers", e);
+        }
+    }
+
+    private static byte[] newMarkerKey() {
+        byte[] key = new byte[32];
+        new SecureRandom().nextBytes(key);
+        return key;
     }
 
     private static AwsException invalidPaginationKey() {

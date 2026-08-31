@@ -227,6 +227,56 @@ class LambdaListLayersParametersIntegrationTest {
         }
     }
 
+    @Test
+    @Order(10)
+    void forgedMarkerIsRejectedEvenWhenWellFormed() {
+        // A caller who knows the cursor format cannot mint a marker: the signature is over a
+        // key this process generated, so a hand-built token is rejected rather than applied
+        // as a cursor, which would silently skip or empty the page.
+        for (String forged : new String[] {"lp-alpha.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                                           "lp-alpha.", ".signature", "lp-alpha"}) {
+            String encoded = Base64.getUrlEncoder().withoutPadding()
+                    .encodeToString(forged.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            given()
+                .queryParam("CompatibleRuntime", PAGE_RUNTIME)
+                .queryParam("Marker", encoded)
+            .when()
+                .get("/2018-10-31/layers")
+            .then()
+                .statusCode(400)
+                .body("__type", equalTo("InvalidParameterValueException"))
+                .body("message", equalTo("Invalid pagination key."));
+        }
+    }
+
+    @Test
+    @Order(10)
+    void markerFromOneListingIsNotAcceptedWithADifferentCursorSpliced() {
+        // Take a real marker, decode it, swap the cursor, re-encode: the signature no longer
+        // matches, so the edited token is refused.
+        String marker = given()
+            .queryParam("CompatibleRuntime", PAGE_RUNTIME)
+            .queryParam("MaxItems", 1)
+        .when()
+            .get("/2018-10-31/layers")
+        .then()
+            .statusCode(200)
+            .extract().path("NextMarker");
+
+        String decoded = new String(Base64.getUrlDecoder().decode(marker),
+                java.nio.charset.StandardCharsets.UTF_8);
+        String spliced = LAYER_B + decoded.substring(decoded.lastIndexOf('.'));
+        given()
+            .queryParam("CompatibleRuntime", PAGE_RUNTIME)
+            .queryParam("Marker", Base64.getUrlEncoder().withoutPadding()
+                    .encodeToString(spliced.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+        .when()
+            .get("/2018-10-31/layers")
+        .then()
+            .statusCode(400)
+            .body("__type", equalTo("InvalidParameterValueException"));
+    }
+
     // ── parameter validation ─────────────────────────────────────────────────
 
     @Test
