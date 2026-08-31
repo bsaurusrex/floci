@@ -321,6 +321,34 @@ public class CognitoService implements ResourceProvider {
         return pool;
     }
 
+    /**
+     * SetUserPoolMfaConfig. Stores the MFA mode and the software-token setting, which is
+     * what GetUserPoolMfaConfig reports back and what the Terraform provider reads to
+     * detect drift on mfa_configuration / software_token_mfa_configuration.
+     *
+     * <p>SMS, email and WebAuthn MFA are accepted and not stored: Floci has no path to
+     * deliver an SMS or email factor, so retaining the config would claim a capability
+     * that does not exist.
+     */
+    public UserPool setUserPoolMfaConfig(String id, String mfaConfiguration,
+                                         Boolean softwareTokenMfaEnabled) {
+        UserPool pool = describeUserPool(id);
+        if (mfaConfiguration != null) {
+            if (!List.of("OFF", "ON", "OPTIONAL").contains(mfaConfiguration)) {
+                throw new AwsException("InvalidParameterException",
+                        "1 validation error detected: Value '" + mfaConfiguration
+                                + "' at 'mfaConfiguration' failed to satisfy constraint: "
+                                + "Member must satisfy enum value set: [ON, OFF, OPTIONAL]", 400);
+            }
+            pool.setMfaConfiguration(mfaConfiguration);
+        }
+        if (softwareTokenMfaEnabled != null) {
+            pool.setSoftwareTokenMfaEnabled(softwareTokenMfaEnabled);
+        }
+        poolStore.put(id, pool);
+        return pool;
+    }
+
     public List<UserPool> listUserPools() {
         return poolStore.scan(k -> true);
     }

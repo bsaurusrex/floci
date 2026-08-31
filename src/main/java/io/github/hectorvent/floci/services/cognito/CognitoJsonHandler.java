@@ -47,6 +47,7 @@ public class CognitoJsonHandler {
             case "UntagResource" -> handleUntagResource(request);
             case "ListTagsForResource" -> handleListTagsForResource(request);
             case "GetUserPoolMfaConfig" -> handleGetUserPoolMfaConfig(request);
+            case "SetUserPoolMfaConfig" -> handleSetUserPoolMfaConfig(request);
             case "DeleteUserPool" -> handleDeleteUserPool(request);
             case "CreateUserPoolClient" -> handleCreateUserPoolClient(request);
             case "DescribeUserPoolClient" -> handleDescribeUserPoolClient(request);
@@ -179,9 +180,31 @@ public class CognitoJsonHandler {
 
     private Response handleGetUserPoolMfaConfig(JsonNode request) {
         UserPool pool = service.describeUserPool(request.path("UserPoolId").asText());
+        return Response.ok(buildMfaConfigResponse(pool)).build();
+    }
+
+    private Response handleSetUserPoolMfaConfig(JsonNode request) {
+        JsonNode softwareToken = request.path("SoftwareTokenMfaConfiguration");
+        UserPool pool = service.setUserPoolMfaConfig(
+                request.path("UserPoolId").asText(),
+                request.hasNonNull("MfaConfiguration") ? request.path("MfaConfiguration").asText() : null,
+                softwareToken.hasNonNull("Enabled") ? softwareToken.path("Enabled").asBoolean() : null);
+        return Response.ok(buildMfaConfigResponse(pool)).build();
+    }
+
+    /**
+     * Shared by Get and Set, which answer with the same members. SoftwareTokenMfaConfiguration
+     * is omitted while unset, matching the live service — it returns only the factors that
+     * have been configured.
+     */
+    private ObjectNode buildMfaConfigResponse(UserPool pool) {
         ObjectNode response = objectMapper.createObjectNode();
+        if (pool.getSoftwareTokenMfaEnabled() != null) {
+            response.putObject("SoftwareTokenMfaConfiguration")
+                    .put("Enabled", pool.getSoftwareTokenMfaEnabled());
+        }
         response.put("MfaConfiguration", pool.getMfaConfiguration());
-        return Response.ok(response).build();
+        return response;
     }
 
     private Response handleDeleteUserPool(JsonNode request) {

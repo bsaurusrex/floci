@@ -28,6 +28,8 @@ Standalone `TagResource` rejects reserved `floci:*` keys. `ListTagsForResource` 
 | ListUserPools | Lists local user pools visible in the request region. |
 | UpdateUserPool | Updates mutable user pool settings and persisted user-pool tags. |
 | DeleteUserPool | Deletes a local user pool and its related state. |
+| GetUserPoolMfaConfig | Returns the pool's MFA mode and, once configured, its software-token setting. |
+| SetUserPoolMfaConfig | Sets `MfaConfiguration` (`OFF`/`ON`/`OPTIONAL`) and `SoftwareTokenMfaConfiguration`. SMS, email and WebAuthn MFA are accepted and not stored — Floci cannot deliver those factors, so keeping the config would imply a capability it does not have. |
 
 ### User Pool Tags
 
