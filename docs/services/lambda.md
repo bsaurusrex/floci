@@ -166,6 +166,13 @@ services:
 
 Function URLs are also reachable directly on `/{proxy:.*}` under the Lambda URL controller, which routes the request into the normal `Invoke` path.
 
+**Versions:** `CreateFunction` and `UpdateFunctionCode` honour `Publish`, publishing a version
+and reporting it in the response's `Version`. The two differ in the ARN they return, matching the
+live service: `CreateFunction` keeps the unqualified `FunctionArn` while `UpdateFunctionCode`
+returns the qualified one (`...:function:name:2`), as `PublishVersion` does. Without `Publish`
+both answer for `$LATEST` and create nothing. `UpdateFunctionConfiguration` has no `Publish`
+parameter in the AWS API and none here.
+
 **Layers:** `PublishLayerVersion`, `GetLayerVersion`, `GetLayerVersionByArn`, `ListLayerVersions`,
 `ListLayers`, and `DeleteLayerVersion` are implemented, with real local storage under
 `{lambda.codePath}/layers/{name}/{version}`. `CreateFunction`/`UpdateFunctionConfiguration`

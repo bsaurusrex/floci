@@ -17,6 +17,8 @@ import {
   UpdateAliasCommand,
   DeleteAliasCommand,
   PublishVersionCommand,
+  ListVersionsByFunctionCommand,
+  UpdateFunctionCodeCommand,
 } from '@aws-sdk/client-lambda';
 import { makeClient, uniqueName, ACCOUNT, buildMinimalZip } from './setup';
 
@@ -183,5 +185,59 @@ describe('Lambda ImageConfig.WorkingDirectory', () => {
     } finally {
       await lambda.send(new DeleteFunctionCommand({ FunctionName: fnName })).catch(() => {});
     }
+  });
+});
+
+describe('Lambda Publish flag', () => {
+  let lambda: LambdaClient;
+  let fnName: string;
+
+  beforeAll(() => {
+    lambda = makeClient(LambdaClient);
+    fnName = `test-publish-${uniqueName()}`;
+  });
+
+  afterAll(async () => {
+    await lambda.send(new DeleteFunctionCommand({ FunctionName: fnName })).catch(() => {});
+  });
+
+  it('should publish version 1 on create and keep the ARN unqualified', async () => {
+    const response = await lambda.send(new CreateFunctionCommand({
+      FunctionName: fnName,
+      Runtime: 'nodejs20.x',
+      Role: `arn:aws:iam::${ACCOUNT}:role/lambda-role`,
+      Handler: 'index.handler',
+      Code: { ZipFile: buildMinimalZip('index.js', Buffer.from('exports.handler = async () => 1;')) },
+      Publish: true,
+    }));
+
+    expect(response.Version).toBe('1');
+    expect(response.FunctionArn).toMatch(new RegExp(`:function:${fnName}$`));
+
+    const listed = await lambda.send(new ListVersionsByFunctionCommand({ FunctionName: fnName }));
+    expect((listed.Versions ?? []).map((v) => v.Version).sort()).toEqual(['$LATEST', '1']);
+  });
+
+  it('should publish the next version on code update and return a qualified ARN', async () => {
+    const response = await lambda.send(new UpdateFunctionCodeCommand({
+      FunctionName: fnName,
+      ZipFile: buildMinimalZip('index.js', Buffer.from('exports.handler = async () => 2;')),
+      Publish: true,
+    }));
+
+    expect(response.Version).toBe('2');
+    expect(response.FunctionArn).toMatch(new RegExp(`:function:${fnName}:2$`));
+  });
+
+  it('should create no version when Publish is not set', async () => {
+    const response = await lambda.send(new UpdateFunctionCodeCommand({
+      FunctionName: fnName,
+      ZipFile: buildMinimalZip('index.js', Buffer.from('exports.handler = async () => 3;')),
+    }));
+
+    expect(response.Version).toBe('$LATEST');
+
+    const listed = await lambda.send(new ListVersionsByFunctionCommand({ FunctionName: fnName }));
+    expect((listed.Versions ?? []).map((v) => v.Version).sort()).toEqual(['$LATEST', '1', '2']);
   });
 });

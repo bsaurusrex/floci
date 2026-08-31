@@ -70,8 +70,10 @@ public class LambdaController {
             @SuppressWarnings("unchecked")
             Map<String, Object> request = objectMapper.readValue(body, Map.class);
             LambdaFunction fn = lambdaService.createFunction(region, request);
+            Map<String, Object> configuration = buildFunctionConfiguration(fn);
+            unqualifyArn(configuration);
             return Response.status(201)
-                    .entity(buildFunctionConfiguration(fn))
+                    .entity(configuration)
                     .build();
         } catch (AwsException e) {
             throw e;
@@ -583,6 +585,18 @@ public class LambdaController {
         java.util.Map<String, Double> result = new java.util.HashMap<>();
         raw.forEach((k, v) -> result.put(k, ((Number) v).doubleValue()));
         return result;
+    }
+
+    /**
+     * CreateFunction reports the version it published but keeps the unqualified ARN, unlike
+     * UpdateFunctionCode and PublishVersion which both answer with the qualified form. Measured
+     * against the live service; the reference does not distinguish them.
+     */
+    private static void unqualifyArn(Map<String, Object> configuration) {
+        if (configuration.get("FunctionArn") instanceof String arn
+                && !"$LATEST".equals(configuration.get("Version"))) {
+            configuration.put("FunctionArn", arn.substring(0, arn.lastIndexOf(':')));
+        }
     }
 
     private Map<String, Object> buildFunctionConfiguration(LambdaFunction fn) {

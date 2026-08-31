@@ -454,6 +454,9 @@ public class LambdaService implements ResourceProvider {
 
         functionStore.save(region, fn);
         LOG.infov("Created Lambda function: {0} in region {1}", functionName, region);
+        if (Boolean.TRUE.equals(request.get("Publish"))) {
+            return publishVersion(region, functionName, null);
+        }
         return fn;
     }
 
@@ -530,6 +533,9 @@ public class LambdaService implements ResourceProvider {
 
         functionStore.save(region, fn);
         LOG.infov("Updated code for function: {0}", functionName);
+        if (Boolean.TRUE.equals(request.get("Publish"))) {
+            return publishVersion(region, functionName, null);
+        }
         return fn;
     }
 
