@@ -168,7 +168,16 @@ Function URLs are also reachable directly on `/{proxy:.*}` under the Lambda URL 
 
 **Layers:** `PublishLayerVersion`, `GetLayerVersion`, `GetLayerVersionByArn`, `ListLayerVersions`,
 `ListLayers`, and `DeleteLayerVersion` are implemented, with real local storage under
-`{lambda.codePath}/layers/{name}/{version}`. `CreateFunction`/`UpdateFunctionConfiguration`
+`{lambda.codePath}/layers/{name}/{version}`. `ListLayers` and `ListLayerVersions` honour
+`CompatibleRuntime`, `CompatibleArchitecture`, `MaxItems` (1-50, defaulting to 50) and `Marker`,
+and always emit `NextMarker`, null on the last page. Under a filter, `LatestMatchingVersion` is
+the newest version that matches rather than the newest overall, and a layer with no matching
+version is omitted; a version published without `CompatibleArchitectures` matches neither
+architecture. `Marker` is opaque and signed with a key generated at startup, so a fabricated,
+edited or previous-run token is rejected with `InvalidParameterValueException` rather than
+applied as a cursor. One divergence: a parameter sent with an empty value
+(`?CompatibleRuntime=`) is treated as absent rather than rejected, because RESTEasy binds an
+empty query value as null. `CreateFunction`/`UpdateFunctionConfiguration`
 validate each `Layers` ARN eagerly against that storage, matching real AWS - an unresolvable ARN
 is rejected with `InvalidParameterValueException`, not silently accepted. Only resolves layers
 published into this same local Floci instance; a real AWS-owned layer ARN (e.g. the AWS AppConfig

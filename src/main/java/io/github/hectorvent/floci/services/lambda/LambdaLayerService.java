@@ -3,6 +3,7 @@ package io.github.hectorvent.floci.services.lambda;
 import io.github.hectorvent.floci.config.EmulatorConfig;
 import io.github.hectorvent.floci.core.common.AwsArnUtils;
 import io.github.hectorvent.floci.core.common.AwsException;
+import io.github.hectorvent.floci.core.common.PaginatedResult;
 import io.github.hectorvent.floci.core.common.RegionResolver;
 import io.github.hectorvent.floci.services.lambda.model.LambdaLayerVersion;
 import io.github.hectorvent.floci.services.lambda.zip.ZipExtractor;
@@ -13,6 +14,7 @@ import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
@@ -25,7 +27,9 @@ import java.util.Base64;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 /**
  * Business logic for Lambda Layer management.
@@ -46,6 +50,37 @@ public class LambdaLayerService {
                     + "|(arn:[a-zA-Z0-9-]+:lambda:::awslayer:[a-zA-Z0-9-_]+))";
     private static final Pattern LAYER_VERSION_ARN = Pattern.compile(LAYER_VERSION_ARN_PATTERN);
     private static final int MAX_LAYER_VERSION_ARN_LENGTH = 140;
+    private static final int MAX_ITEMS_LIMIT = 50;
+
+    /** Tag identifying a Marker as one Floci issued; see {@link #encodeMarker}. */
+    private static final String MARKER_PREFIX = "floci:layer-page:";
+
+    private static final List<String> COMPATIBLE_ARCHITECTURES = List.of("x86_64", "arm64");
+
+    /**
+     * Runtime identifiers accepted for CompatibleRuntime, taken from the live service's own
+     * ValidationException rather than the API reference: it accepts values the reference omits
+     * (java8.al2023, java17.al2023, python3.15, nodejs26.x, the greengrass runtime ARNs) and
+     * rejects everything else, case-sensitively. Rendered into the error message as-is, so the
+     * order is fixed here; the live service's own ordering varies between responses.
+     */
+    private static final List<String> COMPATIBLE_RUNTIMES = List.of(
+            "nodejs", "nodejs4.3", "nodejs4.3-edge", "nodejs6.10", "nodejs8.9", "nodejs8.10",
+            "nodejs8.x", "nodejs10.x", "nodejs12.x", "nodejs14.x", "nodejs16.x", "nodejs18.x",
+            "nodejs20.x", "nodejs22.x", "nodejs24.x", "nodejs26.x",
+            "java8", "java8.al2", "java8.al2023", "java11", "java11.al2023", "java17",
+            "java17.al2023", "java21", "java25",
+            "python2.7", "python2.7-greengrass", "python3.4", "python3.6", "python3.7",
+            "python3.8", "python3.9", "python3.10", "python3.11", "python3.12", "python3.13",
+            "python3.14", "python3.15",
+            "dotnetcore1.0", "dotnetcore2.0", "dotnetcore2.1", "dotnetcore3.1", "dotnet6",
+            "dotnet8", "dotnet10",
+            "ruby2.5", "ruby2.6", "ruby2.7", "ruby3.2", "ruby3.3", "ruby3.4", "ruby4.0",
+            "go1.x", "go1.9", "provided", "provided.al2", "provided.al2023",
+            "byol", "custom", "nasa",
+            "arn:aws:greengrass:::runtime/function/executable",
+            "arn:aws-cn:greengrass:::runtime/function/executable",
+            "arn:aws-us-gov:greengrass:::runtime/function/executable");
 
     private final LambdaLayerStore layerStore;
     private final ZipExtractor zipExtractor;
@@ -162,17 +197,162 @@ public class LambdaLayerService {
     }
 
     /**
-     * Lists all versions of a layer.
+     * Lists the versions of a layer, honouring the documented CompatibleRuntime,
+     * CompatibleArchitecture, MaxItems and Marker parameters. An unknown layer name is an
+     * empty page, not a 404 — the live service answers 200 for a layer that never existed.
      */
-    public List<LambdaLayerVersion> listLayerVersions(String region, String layerName) {
-        return layerStore.listVersions(region, layerName);
+    public PaginatedResult<LambdaLayerVersion> listLayerVersions(String region, String layerName,
+                                                                 String compatibleRuntime,
+                                                                 String compatibleArchitecture,
+                                                                 String maxItems, String marker) {
+        Integer limit = validateListParameters(maxItems, compatibleRuntime, compatibleArchitecture);
+        List<LambdaLayerVersion> versions = layerStore.listVersions(region, layerName).stream()
+                .filter(lv -> matchesFilters(lv, compatibleRuntime, compatibleArchitecture))
+                .toList();
+        // Zero-padded so the cursor's string ordering matches the numeric version ordering.
+        return page(versions, lv -> String.format("%019d", lv.getVersion()), limit, marker);
     }
 
     /**
-     * Lists all layers in a region (returns the latest version of each).
+     * Lists the layers in a region, honouring the same four parameters. Under a filter,
+     * LatestMatchingVersion is the newest version that matches rather than the newest overall,
+     * and a layer with no matching version drops out of the list entirely.
      */
-    public List<LambdaLayerVersion> listLayers(String region) {
-        return layerStore.listLayers(region);
+    public PaginatedResult<LambdaLayerVersion> listLayers(String region, String compatibleRuntime,
+                                                          String compatibleArchitecture,
+                                                          String maxItems, String marker) {
+        Integer limit = validateListParameters(maxItems, compatibleRuntime, compatibleArchitecture);
+        List<LambdaLayerVersion> latestMatching = layerStore.listAllVersions(region).stream()
+                .filter(lv -> matchesFilters(lv, compatibleRuntime, compatibleArchitecture))
+                .collect(Collectors.groupingBy(LambdaLayerVersion::getLayerName))
+                .values().stream()
+                .map(versions -> versions.stream()
+                        .max(Comparator.comparingLong(LambdaLayerVersion::getVersion))
+                        .orElseThrow())
+                .sorted(Comparator.comparing(LambdaLayerVersion::getLayerName))
+                .toList();
+        return page(latestMatching, LambdaLayerVersion::getLayerName, limit, marker);
+    }
+
+    /**
+     * A layer version matches a filter only by listing the value explicitly: one published
+     * without CompatibleArchitectures is absent from both x86_64 and arm64 results rather than
+     * defaulting to x86_64 the way a function's Architectures does.
+     */
+    private static boolean matchesFilters(LambdaLayerVersion lv, String compatibleRuntime,
+                                          String compatibleArchitecture) {
+        if (compatibleRuntime != null) {
+            List<String> runtimes = lv.getCompatibleRuntimes();
+            if (runtimes == null || !runtimes.contains(compatibleRuntime)) {
+                return false;
+            }
+        }
+        if (compatibleArchitecture != null) {
+            List<String> architectures = lv.getCompatibleArchitectures();
+            if (architectures == null || !architectures.contains(compatibleArchitecture)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static <T> PaginatedResult<T> page(List<T> items, Function<T, String> cursorOf,
+                                               Integer maxItems, String marker) {
+        String after = decodeMarker(marker);
+        List<T> remaining = after == null ? items
+                : items.stream().filter(i -> cursorOf.apply(i).compareTo(after) > 0).toList();
+        List<T> pageItems = remaining.stream()
+                .limit(maxItems != null ? maxItems : MAX_ITEMS_LIMIT)
+                .toList();
+        String nextMarker = pageItems.size() < remaining.size()
+                ? encodeMarker(cursorOf.apply(pageItems.get(pageItems.size() - 1)))
+                : null;
+        return new PaginatedResult<>(pageItems, nextMarker);
+    }
+
+    /**
+     * Validates the three parseable list parameters and returns the effective MaxItems.
+     *
+     * <p>Mirrors the live service's ordering, measured rather than documented: a MaxItems that
+     * is not an integer is a SerializationException that short-circuits everything else, while
+     * range and enum failures accumulate into one ValidationException in a fixed member order
+     * (maxItems, compatibleRuntime, compatibleArchitecture) regardless of query-string order.
+     * An empty MaxItems is treated as omitted; a blank one is not.
+     */
+    private static Integer validateListParameters(String maxItems, String compatibleRuntime,
+                                                  String compatibleArchitecture) {
+        Integer parsed = parseMaxItems(maxItems);
+        List<String> errors = new ArrayList<>();
+        if (parsed != null && parsed < 1) {
+            errors.add(constraintFailure(maxItems, "maxItems",
+                    "Member must have value greater than or equal to 1"));
+        } else if (parsed != null && parsed > MAX_ITEMS_LIMIT) {
+            errors.add(constraintFailure(maxItems, "maxItems",
+                    "Member must have value less than or equal to " + MAX_ITEMS_LIMIT));
+        }
+        if (compatibleRuntime != null && !COMPATIBLE_RUNTIMES.contains(compatibleRuntime)) {
+            errors.add(constraintFailure(compatibleRuntime, "compatibleRuntime",
+                    "Member must satisfy enum value set: " + COMPATIBLE_RUNTIMES));
+        }
+        if (compatibleArchitecture != null
+                && !COMPATIBLE_ARCHITECTURES.contains(compatibleArchitecture)) {
+            errors.add(constraintFailure(compatibleArchitecture, "compatibleArchitecture",
+                    "Member must satisfy enum value set: " + COMPATIBLE_ARCHITECTURES));
+        }
+        if (!errors.isEmpty()) {
+            throw new AwsException("ValidationException",
+                    errors.size() + (errors.size() == 1 ? " validation error" : " validation errors")
+                            + " detected: " + String.join("; ", errors), 400);
+        }
+        return parsed;
+    }
+
+    private static Integer parseMaxItems(String maxItems) {
+        if (maxItems == null || maxItems.isEmpty()) {
+            return null;
+        }
+        try {
+            return Integer.valueOf(maxItems);
+        } catch (NumberFormatException e) {
+            throw new AwsException("SerializationException",
+                    "'" + maxItems + "' can not be converted to Integer", 400);
+        }
+    }
+
+    private static String constraintFailure(String value, String member, String requirement) {
+        return "Value '" + value + "' at '" + member + "' failed to satisfy constraint: "
+                + requirement;
+    }
+
+    /**
+     * The live service's Marker is an encrypted token it rejects when it did not issue it.
+     * Floci cannot reproduce the token itself, so it tags its own and rejects anything that
+     * does not carry the tag, which is what makes an arbitrary string a 400 rather than a
+     * silently empty page.
+     */
+    private static String encodeMarker(String cursor) {
+        return Base64.getUrlEncoder().withoutPadding()
+                .encodeToString((MARKER_PREFIX + cursor).getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String decodeMarker(String marker) {
+        if (marker == null) {
+            return null;
+        }
+        String decoded;
+        try {
+            decoded = new String(Base64.getUrlDecoder().decode(marker), StandardCharsets.UTF_8);
+        } catch (IllegalArgumentException e) {
+            throw invalidPaginationKey();
+        }
+        if (!decoded.startsWith(MARKER_PREFIX)) {
+            throw invalidPaginationKey();
+        }
+        return decoded.substring(MARKER_PREFIX.length());
+    }
+
+    private static AwsException invalidPaginationKey() {
+        return new AwsException("InvalidParameterValueException", "Invalid pagination key.", 400);
     }
 
     /**
