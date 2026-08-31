@@ -207,6 +207,7 @@ These AWS Lambda operations have no handler in Floci. Calls will return `404` or
 | `FLOCI_SERVICES_LAMBDA_EXTRA_HOSTS` | *(unset)* | Comma-separated `hostname:ip` entries added to each Lambda container's `/etc/hosts`; `ip` may be `host-gateway`, mirroring `docker run --add-host` |
 | `FLOCI_SERVICES_LAMBDA_DOCKER_HOST_OVERRIDE` | *(unset)* | Explicit host/IP that spawned Lambda containers use to reach Floci's Runtime API, bypassing auto-detection |
 | `FLOCI_SERVICES_LAMBDA_CONTAINER_NAME_PREFIX` | `floci` | Base name prefix for spawned Lambda containers and code volumes (e.g. `acme` → `acme-<function>-<id>` containers, `acme-code-<function>-<hash>` volumes). Must be a valid Docker name segment (`[A-Za-z0-9][A-Za-z0-9_.-]*`); invalid values are ignored with a warning |
+| `FLOCI_SERVICES_LAMBDA_CODE_VOLUME_POPULATE_CONCURRENCY` | `max(2, cpus/2)` | Maximum concurrent first-time code-volume populates. See the note below |
 | `FLOCI_SERVICES_LAMBDA_EXECUTOR` | `docker` | Execution backend: `docker` (containers) or `kubernetes` (pods) |
 | `FLOCI_SERVICES_LAMBDA_KUBERNETES_NAMESPACE` | `default` | Namespace Lambda pods are created in |
 | `FLOCI_SERVICES_LAMBDA_KUBERNETES_LABELS` | *(unset)* | Extra pod labels as comma-separated `key=value` entries |
@@ -225,6 +226,25 @@ These AWS Lambda operations have no handler in Floci. Calls will return `404` or
     ```bash
     docker volume prune --filter label=floci=true
     ```
+
+!!! note "Concurrent cold starts of large functions"
+    A function whose unpacked code is at least 32 MB has that code streamed once into a
+    read-only Docker volume, so later cold starts mount it instead of copying. Those
+    first-time *populates* are capped — a burst of them overwhelms the Docker daemon — and
+    the default cap is `max(2, cpus/2)`, derived from the CPU count the JVM sees.
+
+    Because the JVM honours the container's cgroup CPU quota, running Floci with a small CPU
+    allocation collapses the cap to 2, and a burst of cold starts across *distinct* large
+    functions completes in waves of two rather than in parallel. Six such functions invoked
+    at once take roughly three times the wall-clock of one. Raise the cap to decouple it from
+    the CPU allocation:
+
+    ```bash
+    FLOCI_SERVICES_LAMBDA_CODE_VOLUME_POPULATE_CONCURRENCY=8
+    ```
+
+    Only first-time populates are gated. Warm containers, already-populated volumes, and
+    functions under 32 MB are never serialised by this.
 
 ### Runtime API host override
 

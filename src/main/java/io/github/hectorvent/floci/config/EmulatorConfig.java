@@ -1830,6 +1830,21 @@ public interface EmulatorConfig {
         Optional<String> containerNamePrefix();
 
         /**
+         * Maximum concurrent first-time code-volume populates. Populating streams a large
+         * function's unpacked code into a helper container, so a burst of them can overwhelm
+         * the Docker daemon; this caps how many run at once.
+         *
+         * <p>Unset derives {@code max(2, availableProcessors() / 2)}. That derivation reads the
+         * JVM's view of the cgroup CPU quota, so a CPU-constrained Floci container collapses the
+         * cap to 2 and concurrent cold starts of distinct functions serialize into pairs. Set
+         * this to decouple the cap from the CPU allocation. Values below 1 are ignored with a
+         * warning rather than deadlocking every populate.
+         *
+         * Env var: FLOCI_SERVICES_LAMBDA_CODE_VOLUME_POPULATE_CONCURRENCY
+         */
+        Optional<Integer> codeVolumePopulateConcurrency();
+
+        /**
          * Extra /etc/hosts entries added to every Lambda container, as "hostname:ip" pairs.
          * The ip may be the literal "host-gateway" to map to the Docker host, mirroring
          * {@code docker run --add-host hostname:host-gateway}.
