@@ -260,7 +260,9 @@ describe('Cognito MFA configuration', () => {
 
   afterAll(async () => {
     if (poolId) {
-      await cognito.send(new DeleteUserPoolCommand({ UserPoolId: poolId })).catch(() => {});
+      await cognito
+        .send(new DeleteUserPoolCommand({ UserPoolId: poolId }))
+        .catch((error) => console.warn(`failed to delete MFA test pool ${poolId}`, error));
     }
   });
 

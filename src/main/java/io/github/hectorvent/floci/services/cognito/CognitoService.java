@@ -330,8 +330,16 @@ public class CognitoService implements ResourceProvider {
      * deliver an SMS or email factor, so retaining the config would claim a capability
      * that does not exist.
      */
+    /**
+     * @param otherFactorConfigured whether EmailMfaConfiguration or SmsMfaConfiguration was
+     *     present in the request. Both count towards the factor rules below even though
+     *     Floci does not deliver either challenge; WebAuthnConfiguration does not, measured
+     *     against the live service, which accepts it alongside OFF and does not accept it
+     *     as the sole factor for ON or OPTIONAL.
+     */
     public UserPool setUserPoolMfaConfig(String id, String mfaConfiguration,
-                                         Boolean softwareTokenMfaEnabled) {
+                                         Boolean softwareTokenMfaEnabled,
+                                         boolean otherFactorConfigured) {
         UserPool pool = describeUserPool(id);
         // An absent MfaConfiguration means OFF, not "leave the current mode alone":
         // measured against the live service, which resets a pool that was OPTIONAL back
@@ -343,10 +351,20 @@ public class CognitoService implements ResourceProvider {
                             + "' at 'mfaConfiguration' failed to satisfy constraint: "
                             + "Member must satisfy enum value set: [OPTIONAL, OFF, ON]", 400);
         }
-        if ("OFF".equals(mode) && softwareTokenMfaEnabled != null) {
+        // Presence, not value: the live service rejects OFF alongside
+        // SoftwareTokenMfaConfiguration{Enabled:false} just as it does Enabled:true, and
+        // conversely accepts ON alongside Enabled:false — so the member being there is what
+        // counts, despite the "must be enabled" wording of the second message.
+        boolean anyFactorConfigured = softwareTokenMfaEnabled != null || otherFactorConfigured;
+        if ("OFF".equals(mode) && anyFactorConfigured) {
             throw new AwsException("InvalidParameterException",
                     "Invalid MFA configuration given, can't turn off MFA and configure an "
                             + "MFA together.", 400);
+        }
+        if (!"OFF".equals(mode) && !anyFactorConfigured) {
+            throw new AwsException("InvalidParameterException",
+                    "Invalid MFA Configuration given. SMS MFA, Email MFA, or Software Token "
+                            + "MFA must be enabled.", 400);
         }
         pool.setMfaConfiguration(mode);
         if ("OFF".equals(mode)) {

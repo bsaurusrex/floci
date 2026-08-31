@@ -185,10 +185,13 @@ public class CognitoJsonHandler {
 
     private Response handleSetUserPoolMfaConfig(JsonNode request) {
         JsonNode softwareToken = request.path("SoftwareTokenMfaConfiguration");
+        boolean otherFactorConfigured = request.hasNonNull("EmailMfaConfiguration")
+                || request.hasNonNull("SmsMfaConfiguration");
         UserPool pool = service.setUserPoolMfaConfig(
                 request.path("UserPoolId").asText(),
                 request.hasNonNull("MfaConfiguration") ? request.path("MfaConfiguration").asText() : null,
-                softwareToken.hasNonNull("Enabled") ? softwareToken.path("Enabled").asBoolean() : null);
+                softwareToken.hasNonNull("Enabled") ? softwareToken.path("Enabled").asBoolean() : null,
+                otherFactorConfigured);
         return Response.ok(buildMfaConfigResponse(pool)).build();
     }
 
