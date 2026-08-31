@@ -178,6 +178,35 @@ class LambdaGetLayerVersionByArnIntegrationTest {
     }
 
     @Test
+    @Order(7)
+    void arnNamingAnotherAccountDoesNotResolveTheCallersOwnLayer() throws Exception {
+        String arn = publishLayer();
+        // Same region, name and version — only the account differs. The lookup is keyed within
+        // the caller's own partition, so without an account check this would return the layer
+        // above under someone else's ARN.
+        String foreign = arn.replaceFirst(":\\d{12}:", ":111111111111:");
+
+        given()
+            .queryParam("find", "LayerVersion")
+            .queryParam("Arn", foreign)
+        .when()
+            .get("/2018-10-31/layers")
+        .then()
+            .statusCode(404)
+            .body("__type", equalTo("ResourceNotFoundException"));
+
+        // control: the identical ARN under the caller's own account still resolves
+        given()
+            .queryParam("find", "LayerVersion")
+            .queryParam("Arn", arn)
+        .when()
+            .get("/2018-10-31/layers")
+        .then()
+            .statusCode(200)
+            .body("LayerVersionArn", equalTo(arn));
+    }
+
+    @Test
     @Order(8)
     void listLayersStillWorksWithoutFind() throws Exception {
         publishLayer();

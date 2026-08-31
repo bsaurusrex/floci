@@ -228,6 +228,15 @@ public class LambdaLayerService {
                             + " constraint: Member must satisfy regular expression pattern: "
                             + LAYER_VERSION_ARN_PATTERN, 400);
         }
+        // resolveLayerByArn keys on region/name/version within the caller's own partition, so an
+        // ARN naming another account would otherwise resolve to the caller's same-named layer.
+        // No layer here can be shared cross-account (layer permissions are unimplemented), so a
+        // foreign account is always a miss; this is where sharing would hook in if that changes.
+        String requestedAccount = AwsArnUtils.accountOrDefault(layerVersionArn, null);
+        if (requestedAccount != null && !requestedAccount.equals(regionResolver.getAccountId())) {
+            throw new AwsException("ResourceNotFoundException",
+                    "The resource you requested does not exist.", 404);
+        }
         LambdaLayerVersion lv = resolveLayerByArn(layerVersionArn);
         if (lv == null) {
             throw new AwsException("ResourceNotFoundException",
