@@ -196,9 +196,10 @@ public class LambdaController {
     @DELETE
     @Path("/functions/{functionName}")
     public Response deleteFunction(@Context HttpHeaders headers,
-                                   @PathParam("functionName") String functionName) {
+                                   @PathParam("functionName") String functionName,
+                                   @QueryParam("Qualifier") String qualifier) {
         String region = regionResolver.resolveRegion(headers);
-        lambdaService.deleteFunction(region, functionName);
+        lambdaService.deleteFunction(region, functionName, qualifier);
         return Response.noContent().build();
     }
 

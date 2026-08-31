@@ -173,6 +173,13 @@ returns the qualified one (`...:function:name:2`), as `PublishVersion` does. Wit
 both answer for `$LATEST` and create nothing. `UpdateFunctionConfiguration` has no `Publish`
 parameter in the AWS API and none here.
 
+`DeleteFunction` honours `Qualifier` — it removes that published version only, leaving `$LATEST`,
+the other versions and the function's aliases in place; without a qualifier the whole function
+goes. Matching the live service, deleting `$LATEST` by qualifier and naming an alias are both
+rejected with `InvalidParameterValueException`, a version an alias points at is a
+`ResourceConflictException`, and a version that does not exist is a silent success rather than
+a 404.
+
 **Layers:** `PublishLayerVersion`, `GetLayerVersion`, `GetLayerVersionByArn`, `ListLayerVersions`,
 `ListLayers`, and `DeleteLayerVersion` are implemented, with real local storage under
 `{lambda.codePath}/layers/{name}/{version}`. `ListLayers` and `ListLayerVersions` honour

@@ -706,7 +706,68 @@ public class LambdaService implements ResourceProvider {
         return fn;
     }
 
+    /**
+     * DeleteFunction without a Qualifier: removes the function and every version of it.
+     */
     public void deleteFunction(String region, String functionName) {
+        deleteFunction(region, functionName, null);
+    }
+
+    /**
+     * DeleteFunction. A Qualifier names a single published version to remove, leaving the
+     * function and its other versions in place; without one the whole function goes.
+     */
+    public void deleteFunction(String region, String functionName, String qualifier) {
+        if (qualifier != null && !qualifier.isEmpty()) {
+            deleteFunctionVersion(region, functionName, qualifier);
+            return;
+        }
+        deleteWholeFunction(region, functionName);
+    }
+
+    /**
+     * Removes one published version. Error behaviour follows the live service: deleting
+     * {@code $LATEST} or naming an alias is rejected, a version an alias points at is a
+     * conflict, and a version that does not exist is a silent success rather than a 404.
+     */
+    private void deleteFunctionVersion(String region, String functionName, String qualifier) {
+        LambdaFunction fn = getFunction(region, functionName);
+        if ("$LATEST".equals(qualifier)) {
+            throw new AwsException("InvalidParameterValueException",
+                    "$LATEST version cannot be deleted without deleting the function.", 400);
+        }
+        if (!qualifier.chars().allMatch(Character::isDigit)) {
+            // A non-numeric qualifier names an alias, which the live service refuses to
+            // resolve here rather than deleting the version behind it.
+            throw new AwsException("InvalidParameterValueException",
+                    "Deletion of aliases is not currently supported.", 400);
+        }
+        String name = fn.getFunctionName();
+        List<String> referencing = aliasStore == null ? List.of()
+                : aliasStore.list(region, name).stream()
+                        .filter(alias -> qualifier.equals(alias.getFunctionVersion()))
+                        .map(LambdaAlias::getName)
+                        .toList();
+        if (!referencing.isEmpty()) {
+            throw new AwsException("ResourceConflictException",
+                    "Unable to delete version because the following aliases reference it: "
+                            + referencing, 409);
+        }
+        Optional<LambdaFunction> version = functionStore.get(region, name, qualifier);
+        if (version.isEmpty()) {
+            return;
+        }
+        synchronized (lockForConcurrencyOp(fn.getFunctionArn())) {
+            warmPool.drainEnvironment(version.get());
+            functionStore.deleteVersion(region, name, qualifier);
+            // The snapshot shares $LATEST's code directory, so this only reclaims once no
+            // remaining version references it.
+            reclaimLegacyCodeDirectoryIfUnused(name);
+        }
+        LOG.infov("Deleted version {0} of Lambda function: {1}", qualifier, name);
+    }
+
+    private void deleteWholeFunction(String region, String functionName) {
         LambdaFunction fn = getFunction(region, functionName); // throws 404 if not found
         functionName = fn.getFunctionName();
         String arn = fn.getFunctionArn();
