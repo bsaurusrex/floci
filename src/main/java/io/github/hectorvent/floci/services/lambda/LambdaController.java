@@ -657,10 +657,12 @@ public class LambdaController {
                     .put("LocalMountPath", fileSystem.getLocalMountPath()));
         }
 
-        // Environment — always present (SDK expects it even when empty)
-        ObjectNode envNode = node.putObject("Environment");
+        // Environment — omitted entirely when no variables are set, as AWS does. An empty
+        // object is not the same answer as absence: the Terraform provider reads one back as
+        // an `environment {}` block in state, so a function declared without variables plans a
+        // removal on every run. Same rule as Layers, KMSKeyArn and VpcConfig above.
         if (fn.getEnvironment() != null && !fn.getEnvironment().isEmpty()) {
-            ObjectNode vars = envNode.putObject("Variables");
+            ObjectNode vars = node.putObject("Environment").putObject("Variables");
             fn.getEnvironment().forEach(vars::put);
         }
 
