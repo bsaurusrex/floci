@@ -1373,10 +1373,15 @@ public class CognitoService implements ResourceProvider {
             "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[4][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$");
 
     public ManagedLoginBranding createManagedLoginBranding(String userPoolId, String clientId,
-                                                           boolean useCognitoProvidedValues,
+                                                           Boolean useCognitoProvidedValues,
                                                            Map<String, Object> settings,
                                                            List<Map<String, Object>> assets) {
         UserPoolClient client = describeUserPoolClient(userPoolId, clientId);
+        // AWS requires one of the two: a create that names neither is rejected.
+        if (useCognitoProvidedValues == null && settings == null) {
+            throw new AwsException("InvalidParameterException",
+                    "useCognitoProvidedValues or settings should be specified (but not both)", 400);
+        }
         if (client.getManagedLoginBranding() != null) {
             throw new AwsException("ManagedLoginBrandingExistsException",
                     "A ManagedLoginBranding already exists for client " + clientId, 400);
@@ -1385,7 +1390,7 @@ public class CognitoService implements ResourceProvider {
         ManagedLoginBranding branding = new ManagedLoginBranding();
         branding.setManagedLoginBrandingId(UUID.randomUUID().toString());
         branding.setUserPoolId(userPoolId);
-        branding.setUseCognitoProvidedValues(useCognitoProvidedValues);
+        branding.setUseCognitoProvidedValues(Boolean.TRUE.equals(useCognitoProvidedValues));
         branding.setSettings(settings);
         branding.setAssets(assets);
         client.setManagedLoginBranding(branding);

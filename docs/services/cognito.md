@@ -125,8 +125,10 @@ Standalone `TagResource` rejects reserved `floci:*` keys. `ListTagsForResource` 
 | UpdateManagedLoginBranding | Updates a branding's settings, assets or provided-values flag. |
 | DeleteManagedLoginBranding | Deletes a branding from its app client. |
 
-One branding per app client: a second `CreateManagedLoginBranding` for the same client is
-rejected with `ManagedLoginBrandingExistsException`. `ManagedLoginBrandingId` must be a
+`CreateManagedLoginBranding` must name either `UseCognitoProvidedValues` or `Settings`; a
+request with neither is rejected. One branding per app client: a second
+`CreateManagedLoginBranding` for the same client is rejected with
+`ManagedLoginBrandingExistsException`. `ManagedLoginBrandingId` must be a
 version 4 UUID, and a malformed one is rejected before the lookup, as AWS does.
 `Settings` is omitted from the response when the caller supplied none, while `Assets` is
 always returned. Members an update omits are left unchanged.
@@ -138,6 +140,10 @@ and returned rather than rendered. Two divergences follow from that:
   unknown properties with `Invalid settings provided. Validation errors: [{property:
   $.components...., errorType: UnknownProperty}]`. That schema is not published, so Floci
   accepts any object.
+- **A wrongly typed `Settings` returns a client error.** AWS answers that particular input
+  with `InternalErrorException` and a 500; Floci returns
+  `SerializationException: Unexpected field type`, which is what AWS returns for a wrongly
+  typed `Assets`. Reproducing someone else's 500 seemed worse than being consistent.
 - **`ReturnMergedResources` is not honoured.** Against AWS it merges Cognito's own default
   settings and assets into the response: on a pool with 8 configured assets it returns 38.
   Reproducing that needs Cognito's default corpus, so Floci returns the stored branding

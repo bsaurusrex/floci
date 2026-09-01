@@ -512,7 +512,8 @@ public class CognitoJsonHandler {
         ManagedLoginBranding branding = service.createManagedLoginBranding(
                 request.path("UserPoolId").asText(),
                 request.path("ClientId").asText(),
-                request.path("UseCognitoProvidedValues").asBoolean(false),
+                request.has("UseCognitoProvidedValues")
+                        ? request.path("UseCognitoProvidedValues").asBoolean() : null,
                 readObjectMap(request, "Settings"),
                 readMapList(request, "Assets")
         );
@@ -570,18 +571,25 @@ public class CognitoJsonHandler {
         return node;
     }
 
+    /** Absent or null yields null; a value of the wrong JSON type is a deserialization failure. */
     private Map<String, Object> readObjectMap(JsonNode request, String member) {
         JsonNode node = request.get(member);
-        if (node == null || !node.isObject()) {
+        if (node == null || node.isNull()) {
             return null;
+        }
+        if (!node.isObject()) {
+            throw new AwsException("SerializationException", "Unexpected field type", 400);
         }
         return objectMapper.convertValue(node, new TypeReference<LinkedHashMap<String, Object>>() {});
     }
 
     private List<Map<String, Object>> readMapList(JsonNode request, String member) {
         JsonNode node = request.get(member);
-        if (node == null || !node.isArray()) {
+        if (node == null || node.isNull()) {
             return null;
+        }
+        if (!node.isArray()) {
+            throw new AwsException("SerializationException", "Unexpected field type", 400);
         }
         return objectMapper.convertValue(node, new TypeReference<List<Map<String, Object>>>() {});
     }

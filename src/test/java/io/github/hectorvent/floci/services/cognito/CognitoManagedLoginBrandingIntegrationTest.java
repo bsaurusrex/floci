@@ -217,8 +217,67 @@ class CognitoManagedLoginBrandingIntegrationTest {
                 .body("__type", equalTo("ResourceNotFoundException"));
     }
 
+    /**
+     * Measured against AWS: a create naming neither member is rejected, a wrongly typed Assets
+     * is a deserialization failure, and a non-boolean UseCognitoProvidedValues is accepted
+     * rather than rejected.
+     */
     @Test
     @Order(11)
+    void malformedCreateMembersMatchAwsHandling() throws Exception {
+        String otherClient = cognitoJson("CreateUserPoolClient", """
+                {
+                  "UserPoolId": "%s",
+                  "ClientName": "branding-client-2"
+                }
+                """.formatted(poolId)).path("UserPoolClient").path("ClientId").asText();
+
+        cognitoAction("CreateManagedLoginBranding", """
+                {
+                  "UserPoolId": "%s",
+                  "ClientId": "%s"
+                }
+                """.formatted(poolId, otherClient))
+                .then()
+                .statusCode(400)
+                .body("__type", equalTo("InvalidParameterException"))
+                .body("message", equalTo(
+                        "useCognitoProvidedValues or settings should be specified (but not both)"));
+
+        cognitoAction("CreateManagedLoginBranding", """
+                {
+                  "UserPoolId": "%s",
+                  "ClientId": "%s",
+                  "UseCognitoProvidedValues": true,
+                  "Assets": "nope"
+                }
+                """.formatted(poolId, otherClient))
+                .then()
+                .statusCode(400)
+                .body("__type", equalTo("SerializationException"));
+
+        JsonNode coerced = cognitoJson("CreateManagedLoginBranding", """
+                {
+                  "UserPoolId": "%s",
+                  "ClientId": "%s",
+                  "UseCognitoProvidedValues": "yes"
+                }
+                """.formatted(poolId, otherClient)).path("ManagedLoginBranding");
+        assertTrue(coerced.path("ManagedLoginBrandingId").isTextual(),
+                "AWS accepts a non-boolean UseCognitoProvidedValues rather than rejecting it");
+
+        cognitoAction("DeleteManagedLoginBranding", """
+                {
+                  "UserPoolId": "%s",
+                  "ManagedLoginBrandingId": "%s"
+                }
+                """.formatted(poolId, coerced.path("ManagedLoginBrandingId").asText()))
+                .then()
+                .statusCode(200);
+    }
+
+    @Test
+    @Order(12)
     void deleteRemovesTheBranding() {
         cognitoAction("DeleteManagedLoginBranding", """
                 {
@@ -241,7 +300,7 @@ class CognitoManagedLoginBrandingIntegrationTest {
     }
 
     @Test
-    @Order(12)
+    @Order(13)
     void deletePool() {
         cognitoAction("DeleteUserPool", """
                 {
