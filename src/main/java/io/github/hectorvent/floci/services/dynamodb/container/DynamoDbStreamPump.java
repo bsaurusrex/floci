@@ -95,7 +95,7 @@ public class DynamoDbStreamPump {
         }
     }
 
-    private void drain(StreamCursor cursor) {
+    void drain(StreamCursor cursor) {
         String iterator = cursor.shardIterator;
         if (iterator == null) {
             iterator = openIterator(cursor);
@@ -119,6 +119,10 @@ public class DynamoDbStreamPump {
 
         for (JsonNode record : result.body().path("Records")) {
             replay(cursor, record);
+            String sequenceNumber = record.path("dynamodb").path("SequenceNumber").asText(null);
+            if (sequenceNumber != null) {
+                cursor.lastSequenceNumber = sequenceNumber;
+            }
         }
 
         JsonNode next = result.body().get("NextShardIterator");
@@ -144,9 +148,17 @@ public class DynamoDbStreamPump {
         ObjectNode iteratorRequest = objectMapper.createObjectNode();
         iteratorRequest.put("StreamArn", cursor.containerStreamArn);
         iteratorRequest.put("ShardId", shardId);
-        // TRIM_HORIZON, not LATEST: the table is registered at CreateTable, so starting at the
-        // oldest record cannot replay writes that predate Floci knowing about the table.
-        iteratorRequest.put("ShardIteratorType", "TRIM_HORIZON");
+        if (cursor.lastSequenceNumber == null) {
+            // TRIM_HORIZON, not LATEST: the table is registered at CreateTable, so starting at the
+            // oldest record cannot replay writes that predate Floci knowing about the table.
+            iteratorRequest.put("ShardIteratorType", "TRIM_HORIZON");
+        } else {
+            // Reopening after an expired or trimmed iterator. Resuming from the horizon would
+            // replay everything already emitted, and each replayed record is another event source
+            // mapping invocation.
+            iteratorRequest.put("ShardIteratorType", "AFTER_SEQUENCE_NUMBER");
+            iteratorRequest.put("SequenceNumber", cursor.lastSequenceNumber);
+        }
         DynamoDbLocalClient.Result opened = client.callStreams("GetShardIterator", iteratorRequest, cursor.region);
         if (!opened.isSuccess()) {
             return null;
@@ -185,13 +197,15 @@ public class DynamoDbStreamPump {
         return region + "/" + tableName;
     }
 
-    private static final class StreamCursor {
+    static final class StreamCursor {
         private final TableDefinition table;
         private final String region;
         private final String containerStreamArn;
         private volatile String shardIterator;
+        /** Last record handed to Floci, so a reopened iterator resumes instead of replaying. */
+        private volatile String lastSequenceNumber;
 
-        private StreamCursor(TableDefinition table, String region, String containerStreamArn) {
+        StreamCursor(TableDefinition table, String region, String containerStreamArn) {
             this.table = table;
             this.region = region;
             this.containerStreamArn = containerStreamArn;
