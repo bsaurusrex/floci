@@ -199,8 +199,58 @@ class CognitoLogDeliveryConfigurationIntegrationTest {
                 """.formatted(poolId)).path("LogDeliveryConfiguration").path("LogConfigurations").size());
     }
 
+    /**
+     * A malformed request must not be read as an intentional clear: AWS rejects a null
+     * LogConfigurations outright, and reports a wrong JSON type as a serialization failure.
+     */
     @Test
     @Order(9)
+    void malformedRequestsAreRejectedRatherThanClearingTheConfiguration() throws Exception {
+        cognitoJson("SetLogDeliveryConfiguration", """
+                {
+                  "UserPoolId": "%s",
+                  "LogConfigurations": [
+                    {
+                      "LogLevel": "ERROR",
+                      "EventSource": "userNotification",
+                      "CloudWatchLogsConfiguration": {"LogGroupArn": "%s"}
+                    }
+                  ]
+                }
+                """.formatted(poolId, LOG_GROUP_ARN));
+
+        cognitoAction("SetLogDeliveryConfiguration", """
+                {
+                  "UserPoolId": "%s"
+                }
+                """.formatted(poolId))
+                .then()
+                .statusCode(400)
+                .body("__type", equalTo("InvalidParameterException"))
+                .body("message", equalTo(
+                        "1 validation error detected: Value null at 'logConfigurations' failed to "
+                                + "satisfy constraint: Member must not be null"));
+
+        cognitoAction("SetLogDeliveryConfiguration", """
+                {
+                  "UserPoolId": "%s",
+                  "LogConfigurations": "nope"
+                }
+                """.formatted(poolId))
+                .then()
+                .statusCode(400)
+                .body("__type", equalTo("SerializationException"));
+
+        assertEquals(1, cognitoJson("GetLogDeliveryConfiguration", """
+                {
+                  "UserPoolId": "%s"
+                }
+                """.formatted(poolId)).path("LogDeliveryConfiguration").path("LogConfigurations").size(),
+                "a rejected request must leave the stored configuration untouched");
+    }
+
+    @Test
+    @Order(10)
     void unknownPoolIsRejected() {
         cognitoAction("GetLogDeliveryConfiguration", """
                 {
@@ -213,7 +263,7 @@ class CognitoLogDeliveryConfigurationIntegrationTest {
     }
 
     @Test
-    @Order(10)
+    @Order(11)
     void deletePool() {
         cognitoAction("DeleteUserPool", """
                 {

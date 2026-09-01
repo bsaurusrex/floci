@@ -400,10 +400,17 @@ public class CognitoJsonHandler {
         return node;
     }
 
+    /**
+     * Absent or null yields null so the service can reject it; a value of the wrong JSON type is
+     * a deserialization failure, which AWS reports as SerializationException.
+     */
     private List<Map<String, Object>> readObjectList(JsonNode request, String member) {
         JsonNode node = request.get(member);
-        if (node == null || !node.isArray()) {
-            return List.of();
+        if (node == null || node.isNull()) {
+            return null;
+        }
+        if (!node.isArray()) {
+            throw new AwsException("SerializationException", "Expected list or null", 400);
         }
         return objectMapper.convertValue(node, new TypeReference<List<Map<String, Object>>>() {});
     }

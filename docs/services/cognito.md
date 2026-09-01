@@ -71,8 +71,8 @@ Standalone `TagResource` rejects reserved `floci:*` keys. `ListTagsForResource` 
 | GetLogDeliveryConfiguration | Returns a user pool's log delivery configuration. |
 
 `LogLevel` accepts `ERROR` or `INFO`, and `EventSource` accepts `userNotification` or
-`userAuthEvents`. Each entry must name a destination — `CloudWatchLogsConfiguration`,
-`FirehoseConfiguration` or `S3Configuration` — and a request that omits one is rejected the
+`userAuthEvents`. Each entry must name a destination: `CloudWatchLogsConfiguration`,
+`FirehoseConfiguration` or `S3Configuration`, and a request that omits one is rejected the
 way AWS rejects it. `Set` replaces the whole list rather than merging, so an empty
 `LogConfigurations` is what clears it, and `Get` always returns the member, as `[]` when
 nothing is configured.

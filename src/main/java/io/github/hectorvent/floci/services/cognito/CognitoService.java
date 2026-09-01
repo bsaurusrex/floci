@@ -957,7 +957,12 @@ public class CognitoService implements ResourceProvider {
      */
     public UserPool setLogDeliveryConfiguration(String userPoolId, List<Map<String, Object>> logConfigurations) {
         UserPool pool = describeUserPool(userPoolId);
-        List<Map<String, Object>> configs = logConfigurations == null ? List.of() : logConfigurations;
+        if (logConfigurations == null) {
+            throw new AwsException("InvalidParameterException",
+                    "1 validation error detected: Value null at 'logConfigurations' failed to "
+                            + "satisfy constraint: Member must not be null", 400);
+        }
+        List<Map<String, Object>> configs = logConfigurations;
 
         List<String> withoutDestination = new ArrayList<>();
         for (int i = 0; i < configs.size(); i++) {
