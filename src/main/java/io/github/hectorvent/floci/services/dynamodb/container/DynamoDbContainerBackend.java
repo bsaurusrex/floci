@@ -16,6 +16,7 @@ import org.jboss.logging.Logger;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -84,8 +85,15 @@ public class DynamoDbContainerBackend {
      */
     private final Map<String, OrphanedTable> orphanedTables = new ConcurrentHashMap<>();
 
-    /** A table left in the container after Floci deleted its own copy. */
-    private record OrphanedTable(String accountId, String region, String tableName) { }
+    /**
+     * A table left in the container after Floci deleted its own copy.
+     *
+     * <p>{@code markerId} identifies who installed it. Overlapping DeleteTable requests share a
+     * key, so an unwind must only withdraw the marker it put there itself and never one a
+     * concurrent request has since confirmed.
+     */
+    private record OrphanedTable(String accountId, String region, String tableName,
+                                 String markerId) { }
 
     @Inject
     public DynamoDbContainerBackend(EmulatorConfig config,
@@ -222,14 +230,17 @@ public class DynamoDbContainerBackend {
      *
      * @return true when this call installed the marker, so only that caller may remove it
      */
-    public boolean beginDelete(JsonNode request, String region) {
+    public String beginDelete(JsonNode request, String region) {
         String tableName = request.path("TableName").asText(null);
         if (tableName == null) {
-            return false;
+            return null;
         }
         String accountId = regionResolver.getAccountId();
-        return orphanedTables.putIfAbsent(key(accountId, region, tableName),
-                new OrphanedTable(accountId, region, tableName)) == null;
+        String markerId = UUID.randomUUID().toString();
+        OrphanedTable marker = new OrphanedTable(accountId, region, tableName, markerId);
+        return orphanedTables.putIfAbsent(key(accountId, region, tableName), marker) == null
+                ? markerId
+                : null;
     }
 
     /**
@@ -238,11 +249,15 @@ public class DynamoDbContainerBackend {
      * <p>Only ever called with the result of that method, so a marker left by an earlier genuine
      * drop failure is never cleared by a DeleteTable that Floci itself rejected.
      */
-    public void abandonDelete(JsonNode request, String region) {
+    public void abandonDelete(JsonNode request, String region, String markerId) {
         String tableName = request.path("TableName").asText(null);
-        if (tableName != null) {
-            orphanedTables.remove(key(regionResolver.getAccountId(), region, tableName));
+        if (tableName == null || markerId == null) {
+            return;
         }
+        // Withdraw only this request's own marker. A concurrent DeleteTable may have succeeded and
+        // had its container drop fail in the meantime, and that orphan must survive this unwind.
+        orphanedTables.computeIfPresent(key(regionResolver.getAccountId(), region, tableName),
+                (key, existing) -> markerId.equals(existing.markerId()) ? null : existing);
     }
 
     /**
@@ -326,7 +341,8 @@ public class DynamoDbContainerBackend {
      * forwarded reads, and would collide with the next table of the same name.
      */
     private void dropFromContainer(String tableName, String region) {
-        dropAs(new OrphanedTable(regionResolver.getAccountId(), region, tableName));
+        dropAs(new OrphanedTable(regionResolver.getAccountId(), region, tableName,
+                UUID.randomUUID().toString()));
     }
 
     /** Drops a table under the account that owns it, not the account making the current request. */
@@ -345,7 +361,7 @@ public class DynamoDbContainerBackend {
         DynamoDbLocalClient.Result result =
                 client.call(orphan.accountId(), "DeleteTable", mirror, region);
         if (result.isSuccess() || "ResourceNotFoundException".equals(result.errorCode())) {
-            orphanedTables.remove(orphanKey);
+            orphanedTables.remove(orphanKey, orphan);
             return;
         }
         throw new IllegalStateException("DynamoDB container backend could not drop " + tableName
