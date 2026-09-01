@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.github.hectorvent.floci.config.EmulatorConfig;
+import io.github.hectorvent.floci.core.common.AwsException;
 import io.github.hectorvent.floci.services.dynamodb.model.TableDefinition;
 import jakarta.ws.rs.core.Response;
 import org.junit.jupiter.api.Test;
@@ -210,6 +211,76 @@ class DynamoDbContainerBackendTest {
         // Dropped the previous generation, then created the new one, so no items survive across it.
         verify(client).call(eq("DeleteTable"), any(), eq("us-east-1"));
         verify(client, times(2)).call(eq("CreateTable"), any(), eq("us-east-1"));
+    }
+
+
+    @Test
+    void afterAFailedDropForwardedReadsAreRefusedRatherThanServingTheOldGeneration() {
+        DynamoDbContainerBackend backend = backendWith("container");
+        ObjectNode error = MAPPER.createObjectNode();
+        error.put("__type", "com.amazon.coral.service#InternalFailure");
+        when(client.call(eq("DeleteTable"), any(), any()))
+                .thenReturn(new DynamoDbLocalClient.Result(500, error));
+
+        ObjectNode deleteRequest = MAPPER.createObjectNode();
+        deleteRequest.put("TableName", "Users");
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> backend.mirrorControlPlane("DeleteTable", deleteRequest, "us-east-1", null));
+
+        // Floci's metadata says the table is gone. A forwarded read must agree, not answer from
+        // the container copy the drop failed to remove.
+        ObjectNode read = MAPPER.createObjectNode();
+        read.put("TableName", "Users");
+        AwsException thrown = org.junit.jupiter.api.Assertions.assertThrows(AwsException.class,
+                () -> backend.forwardIfDataPlane("GetItem", read, "us-east-1"));
+        assertEquals("ResourceNotFoundException", thrown.getErrorCode());
+        verify(client, never()).call(eq("GetItem"), any(), any());
+    }
+
+    @Test
+    void anOrphanedTableIsForwardedAgainOnceTheDropFinallySucceeds() {
+        DynamoDbContainerBackend backend = backendWith("container");
+        ObjectNode error = MAPPER.createObjectNode();
+        error.put("__type", "com.amazon.coral.service#InternalFailure");
+        when(client.call(eq("DeleteTable"), any(), any()))
+                .thenReturn(new DynamoDbLocalClient.Result(500, error))
+                .thenReturn(new DynamoDbLocalClient.Result(200, MAPPER.createObjectNode()));
+        when(client.call(eq("GetItem"), any(), any()))
+                .thenReturn(new DynamoDbLocalClient.Result(200, MAPPER.createObjectNode()));
+
+        ObjectNode deleteRequest = MAPPER.createObjectNode();
+        deleteRequest.put("TableName", "Users");
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> backend.mirrorControlPlane("DeleteTable", deleteRequest, "us-east-1", null));
+
+        // The retry succeeds, so the table is genuinely gone and the container can answer.
+        ObjectNode read = MAPPER.createObjectNode();
+        read.put("TableName", "Users");
+        assertEquals(200, backend.forwardIfDataPlane("GetItem", read, "us-east-1").getStatus());
+    }
+
+    @Test
+    void orphanCheckSeesTablesNamedByBatchAndTransactRequests() {
+        DynamoDbContainerBackend backend = backendWith("container");
+        ObjectNode error = MAPPER.createObjectNode();
+        error.put("__type", "com.amazon.coral.service#InternalFailure");
+        when(client.call(eq("DeleteTable"), any(), any()))
+                .thenReturn(new DynamoDbLocalClient.Result(500, error));
+
+        ObjectNode deleteRequest = MAPPER.createObjectNode();
+        deleteRequest.put("TableName", "Users");
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> backend.mirrorControlPlane("DeleteTable", deleteRequest, "us-east-1", null));
+
+        ObjectNode batch = MAPPER.createObjectNode();
+        batch.putObject("RequestItems").putObject("Users");
+        org.junit.jupiter.api.Assertions.assertThrows(AwsException.class,
+                () -> backend.forwardIfDataPlane("BatchGetItem", batch, "us-east-1"));
+
+        ObjectNode transact = MAPPER.createObjectNode();
+        transact.putArray("TransactItems").addObject().putObject("Put").put("TableName", "Users");
+        org.junit.jupiter.api.Assertions.assertThrows(AwsException.class,
+                () -> backend.forwardIfDataPlane("TransactWriteItems", transact, "us-east-1"));
     }
 
 }

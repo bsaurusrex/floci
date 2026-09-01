@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.github.hectorvent.floci.config.EmulatorConfig;
+import io.github.hectorvent.floci.core.common.AwsException;
 import io.github.hectorvent.floci.services.dynamodb.DynamoDbStreamService;
 import io.github.hectorvent.floci.services.dynamodb.model.TableDefinition;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -11,6 +12,7 @@ import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
 import org.jboss.logging.Logger;
 
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -66,6 +68,9 @@ public class DynamoDbContainerBackend {
     /** region + "/" + tableName of tables already mirrored, so UpdateTable can tell new from known. */
     private final Map<String, String> mirroredStreamArns = new ConcurrentHashMap<>();
 
+    /** Tables Floci has deleted that the container would not drop. Forwards for these are refused. */
+    private final Set<String> orphanedTables = ConcurrentHashMap.newKeySet();
+
     @Inject
     public DynamoDbContainerBackend(EmulatorConfig config,
                                     DynamoDbLocalClient client,
@@ -91,10 +96,66 @@ public class DynamoDbContainerBackend {
         if (!DATA_PLANE_ACTIONS.contains(action)) {
             return null;
         }
+        refuseOrphanedTables(request, region);
         DynamoDbLocalClient.Result result = client.call(action, request, region);
         // Errors are passed through verbatim: the container's codes and messages are the
         // reason for routing here in the first place.
         return Response.status(result.statusCode()).entity(result.body()).build();
+    }
+
+    /**
+     * Blocks a forward that names a table Floci deleted but the container would not drop.
+     *
+     * <p>Forwarded reads never consult Floci's metadata, so a table left behind by a failed drop
+     * would keep answering with items from the deleted generation. The drop is retried first, since
+     * the original failure may have been transient. If it still will not go, the request is refused
+     * with what Floci's own metadata implies rather than served from the container.
+     */
+    private void refuseOrphanedTables(JsonNode request, String region) {
+        if (orphanedTables.isEmpty()) {
+            return;
+        }
+        for (String tableName : referencedTables(request)) {
+            String orphanKey = key(region, tableName);
+            if (!orphanedTables.contains(orphanKey)) {
+                continue;
+            }
+            try {
+                dropFromContainer(tableName, region);
+                orphanedTables.remove(orphanKey);
+            } catch (RuntimeException e) {
+                throw new AwsException("ResourceNotFoundException",
+                        "Requested resource not found", 400);
+            }
+        }
+    }
+
+    /**
+     * Table names a data-plane request names, across the single-table, batch and transact shapes.
+     */
+    private static Set<String> referencedTables(JsonNode request) {
+        Set<String> tables = new LinkedHashSet<>();
+        JsonNode single = request.get("TableName");
+        if (single != null && single.isTextual()) {
+            tables.add(single.asText());
+        }
+        JsonNode requestItems = request.get("RequestItems");
+        if (requestItems != null && requestItems.isObject()) {
+            requestItems.fieldNames().forEachRemaining(tables::add);
+        }
+        JsonNode transactItems = request.get("TransactItems");
+        if (transactItems != null && transactItems.isArray()) {
+            for (JsonNode item : transactItems) {
+                // Each entry wraps exactly one of Put, Update, Delete, Get or ConditionCheck.
+                item.forEach(operation -> {
+                    JsonNode name = operation.get("TableName");
+                    if (name != null && name.isTextual()) {
+                        tables.add(name.asText());
+                    }
+                });
+            }
+        }
+        return tables;
     }
 
     /**
@@ -150,6 +211,7 @@ public class DynamoDbContainerBackend {
                     + table.getTableName() + ": " + result.errorCode() + " " + result.errorMessage());
         }
 
+        orphanedTables.remove(key(region, table.getTableName()));
         if (streamed) {
             String streamArn = result.body().path("TableDescription").path("LatestStreamArn").asText(null);
             if (streamArn != null) {
@@ -183,6 +245,7 @@ public class DynamoDbContainerBackend {
         if (result.isSuccess() || "ResourceNotFoundException".equals(result.errorCode())) {
             return;
         }
+        orphanedTables.add(key(region, tableName));
         throw new IllegalStateException("DynamoDB container backend could not drop " + tableName
                 + ", its items would stay readable: " + result.errorCode() + " "
                 + result.errorMessage());
