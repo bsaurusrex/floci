@@ -202,27 +202,31 @@ These come from downloadable DynamoDB itself and apply only when `backend=contai
 | `TransactionConflictException` | Raised | Never raised by DynamoDB local |
 
 Enum members that AWS validates ahead of the table lookup — `ReturnValues`,
-`ReturnConsumedCapacity`, `ReturnItemCollectionMetrics` — are checked by Floci before the
-request is forwarded, because DynamoDB local resolves the table first and would answer
-`ResourceNotFoundException` where AWS answers `ValidationException`.
+`ReturnConsumedCapacity`, `ReturnItemCollectionMetrics` — are checked by Floci before the request
+is forwarded, because DynamoDB local resolves the table first. Measured against live AWS: an
+invalid `ReturnConsumedCapacity` on a table that does not exist returns `ValidationException`,
+while the same call with a valid enum returns `ResourceNotFoundException`.
 
 ### Where the container is stricter than the native backend
 
 Two conformance cases fail in container mode because DynamoDB local rejects something the
-in-process engine allows, and on the documentation the container looks right:
+in-process engine allows. Both were checked against the live DynamoDB API, which returns the
+container's error **verbatim** — so the container is right and the native backend is lenient:
 
 - **Unused `ExpressionAttributeNames`.** Supplying `#st` without referencing it in any
-  expression is rejected with `Value provided in ExpressionAttributeNames unused in
-  expressions`. The native backend accepts it.
-- **Mixing legacy and expression parameters.** `QueryFilter` alongside
-  `KeyConditionExpression` is rejected with `Can not use both expression and non-expression
-  parameters in the same request`. The native backend runs the query. The DynamoDB developer
-  guide is explicit that this combination is an error: "DynamoDB does not allow mixing legacy
-  conditional parameters and expression parameters in a single call."
+  expression is rejected. Live AWS:
+  `ValidationException: Value provided in ExpressionAttributeNames unused in expressions: keys: {#st}`
+- **Mixing legacy and expression parameters.** `QueryFilter` alongside `KeyConditionExpression`
+  is rejected. Live AWS:
+  `ValidationException: Can not use both expression and non-expression parameters in the same
+  request: Non-expression parameters: {QueryFilter} Expression parameters: {KeyConditionExpression}`
+  The developer guide agrees: "DynamoDB does not allow mixing legacy conditional parameters and
+  expression parameters in a single call."
 
-Both are pinned as passing by `compatibility-tests/sdk-test-node/tests/dynamodb-conformance.test.ts`,
-so they are recorded here rather than "fixed" — tightening the native engine to match would
-change behaviour those tests currently assert, and is a separate decision from adding a backend.
+Both are currently pinned as *passing* by
+`compatibility-tests/sdk-test-node/tests/dynamodb-conformance.test.ts`, so they are recorded here
+rather than "fixed" — tightening the native engine to match real AWS would change behaviour those
+tests assert, and is a separate decision from adding a backend.
 
 ### Not yet mirrored
 
