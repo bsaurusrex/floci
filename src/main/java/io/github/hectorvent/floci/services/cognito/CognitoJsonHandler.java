@@ -61,6 +61,8 @@ public class CognitoJsonHandler {
             case "CreateUserPoolDomain" -> handleCreateUserPoolDomain(request);
             case "DescribeUserPoolDomain" -> handleDescribeUserPoolDomain(request);
             case "DeleteUserPoolDomain" -> handleDeleteUserPoolDomain(request);
+            case "SetLogDeliveryConfiguration" -> handleSetLogDeliveryConfiguration(request);
+            case "GetLogDeliveryConfiguration" -> handleGetLogDeliveryConfiguration(request);
             case "AdminResetUserPassword" -> handleAdminResetUserPassword(request);
             case "AdminCreateUser" -> handleAdminCreateUser(request);
             case "AdminGetUser" -> handleAdminGetUser(request);
@@ -371,6 +373,39 @@ public class CognitoJsonHandler {
         ObjectNode response = objectMapper.createObjectNode();
         response.set("DomainDescription", userPoolDomainToNode(domain));
         return Response.ok(response).build();
+    }
+
+    private Response handleSetLogDeliveryConfiguration(JsonNode request) {
+        UserPool pool = service.setLogDeliveryConfiguration(
+                request.path("UserPoolId").asText(),
+                readObjectList(request, "LogConfigurations")
+        );
+        ObjectNode response = objectMapper.createObjectNode();
+        response.set("LogDeliveryConfiguration", logDeliveryConfigurationToNode(pool));
+        return Response.ok(response).build();
+    }
+
+    private Response handleGetLogDeliveryConfiguration(JsonNode request) {
+        UserPool pool = service.getLogDeliveryConfiguration(request.path("UserPoolId").asText());
+        ObjectNode response = objectMapper.createObjectNode();
+        response.set("LogDeliveryConfiguration", logDeliveryConfigurationToNode(pool));
+        return Response.ok(response).build();
+    }
+
+    private ObjectNode logDeliveryConfigurationToNode(UserPool pool) {
+        ObjectNode node = objectMapper.createObjectNode();
+        node.put("UserPoolId", pool.getId());
+        ArrayNode configurations = node.putArray("LogConfigurations");
+        pool.getLogConfigurations().forEach(config -> configurations.add(objectMapper.valueToTree(config)));
+        return node;
+    }
+
+    private List<Map<String, Object>> readObjectList(JsonNode request, String member) {
+        JsonNode node = request.get(member);
+        if (node == null || !node.isArray()) {
+            return List.of();
+        }
+        return objectMapper.convertValue(node, new TypeReference<List<Map<String, Object>>>() {});
     }
 
     private Response handleDeleteUserPoolDomain(JsonNode request) {

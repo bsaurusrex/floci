@@ -191,6 +191,102 @@ class TestCognitoAuth:
             cognito_client.delete_user_pool(UserPoolId=pool_id)
 
 
+class TestCognitoLogDeliveryConfiguration:
+    """Test Cognito log delivery configuration operations.
+
+    ``LogConfigurations`` is always present on the response, as ``[]`` when nothing
+    is configured, and ``SetLogDeliveryConfiguration`` replaces the list rather than
+    merging into it.
+    """
+
+    LOG_GROUP_ARN = "arn:aws:logs:us-east-1:000000000000:log-group:pytest-cognito-logs"
+
+    @pytest.fixture
+    def pool_id(self, cognito_client, unique_name):
+        response = cognito_client.create_user_pool(PoolName=f"pytest-log-pool-{unique_name}")
+        pool_id = response["UserPool"]["Id"]
+        yield pool_id
+        cognito_client.delete_user_pool(UserPoolId=pool_id)
+
+    def test_get_returns_an_empty_list_before_anything_is_configured(
+        self, cognito_client, pool_id
+    ):
+        """An unconfigured pool still returns the LogConfigurations member."""
+        config = cognito_client.get_log_delivery_configuration(UserPoolId=pool_id)[
+            "LogDeliveryConfiguration"
+        ]
+
+        assert config["UserPoolId"] == pool_id
+        assert config["LogConfigurations"] == []
+
+    def test_set_round_trips_and_replaces(self, cognito_client, pool_id):
+        """Set stores the configuration, and a second Set replaces rather than merges."""
+        cognito_client.set_log_delivery_configuration(
+            UserPoolId=pool_id,
+            LogConfigurations=[
+                {
+                    "LogLevel": "ERROR",
+                    "EventSource": "userNotification",
+                    "CloudWatchLogsConfiguration": {"LogGroupArn": self.LOG_GROUP_ARN},
+                }
+            ],
+        )
+
+        config = cognito_client.get_log_delivery_configuration(UserPoolId=pool_id)[
+            "LogDeliveryConfiguration"
+        ]
+        assert len(config["LogConfigurations"]) == 1
+        assert config["LogConfigurations"][0]["EventSource"] == "userNotification"
+        assert (
+            config["LogConfigurations"][0]["CloudWatchLogsConfiguration"]["LogGroupArn"]
+            == self.LOG_GROUP_ARN
+        )
+
+        cognito_client.set_log_delivery_configuration(
+            UserPoolId=pool_id,
+            LogConfigurations=[
+                {
+                    "LogLevel": "INFO",
+                    "EventSource": "userAuthEvents",
+                    "CloudWatchLogsConfiguration": {"LogGroupArn": self.LOG_GROUP_ARN},
+                }
+            ],
+        )
+        replaced = cognito_client.get_log_delivery_configuration(UserPoolId=pool_id)[
+            "LogDeliveryConfiguration"
+        ]
+        assert len(replaced["LogConfigurations"]) == 1
+        assert replaced["LogConfigurations"][0]["EventSource"] == "userAuthEvents"
+
+    def test_empty_list_clears_the_configuration(self, cognito_client, pool_id):
+        """An empty LogConfigurations clears what was stored."""
+        cognito_client.set_log_delivery_configuration(
+            UserPoolId=pool_id,
+            LogConfigurations=[
+                {
+                    "LogLevel": "ERROR",
+                    "EventSource": "userNotification",
+                    "CloudWatchLogsConfiguration": {"LogGroupArn": self.LOG_GROUP_ARN},
+                }
+            ],
+        )
+
+        cognito_client.set_log_delivery_configuration(UserPoolId=pool_id, LogConfigurations=[])
+
+        config = cognito_client.get_log_delivery_configuration(UserPoolId=pool_id)[
+            "LogDeliveryConfiguration"
+        ]
+        assert config["LogConfigurations"] == []
+
+    def test_set_rejects_a_configuration_with_no_destination(self, cognito_client, pool_id):
+        """Every event source in the request must name a destination."""
+        with pytest.raises(cognito_client.exceptions.InvalidParameterException):
+            cognito_client.set_log_delivery_configuration(
+                UserPoolId=pool_id,
+                LogConfigurations=[{"LogLevel": "ERROR", "EventSource": "userNotification"}],
+            )
+
+
 class TestCognitoDescribeUserPoolStandardAttributes:
     """DescribeUserPool must return all 20 standard OIDC attributes."""
 

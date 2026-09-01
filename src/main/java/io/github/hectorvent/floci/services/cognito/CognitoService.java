@@ -946,6 +946,60 @@ public class CognitoService implements ResourceProvider {
                 .format(java.time.Instant.now());
     }
 
+    // ──────────────────────────── Log Delivery ────────────────────────────
+
+    private static final Set<String> LOG_LEVELS = Set.of("ERROR", "INFO");
+    private static final Set<String> LOG_EVENT_SOURCES = Set.of("userAuthEvents", "userNotification");
+
+    /**
+     * Replaces the pool's log configuration wholesale: AWS has no merge semantics here, and an
+     * empty list is what clears it.
+     */
+    public UserPool setLogDeliveryConfiguration(String userPoolId, List<Map<String, Object>> logConfigurations) {
+        UserPool pool = describeUserPool(userPoolId);
+        List<Map<String, Object>> configs = logConfigurations == null ? List.of() : logConfigurations;
+
+        List<String> withoutDestination = new ArrayList<>();
+        for (int i = 0; i < configs.size(); i++) {
+            Map<String, Object> config = configs.get(i);
+            validateLogMember(config.get("LogLevel"), LOG_LEVELS, i, "logLevel", "[ERROR, INFO]");
+            validateLogMember(config.get("EventSource"), LOG_EVENT_SOURCES, i, "eventSource",
+                    "[userAuthEvents, userNotification]");
+            if (!hasLogDestination(config)) {
+                withoutDestination.add(String.valueOf(config.get("EventSource")));
+            }
+        }
+        if (!withoutDestination.isEmpty()) {
+            throw new AwsException("InvalidParameterException",
+                    "Request validation Failed. Following event sources in request have no destination: "
+                            + withoutDestination + ".", 400);
+        }
+
+        pool.setLogConfigurations(new ArrayList<>(configs));
+        poolStore.put(userPoolId, pool);
+        return pool;
+    }
+
+    public UserPool getLogDeliveryConfiguration(String userPoolId) {
+        return describeUserPool(userPoolId);
+    }
+
+    private boolean hasLogDestination(Map<String, Object> config) {
+        return config.get("CloudWatchLogsConfiguration") != null
+                || config.get("FirehoseConfiguration") != null
+                || config.get("S3Configuration") != null;
+    }
+
+    /** AWS reports the offending member with a 1-based index, e.g. {@code logConfigurations.1.member.logLevel}. */
+    private void validateLogMember(Object value, Set<String> allowed, int index, String member, String enumSet) {
+        if (value == null || !allowed.contains(String.valueOf(value))) {
+            throw new AwsException("InvalidParameterException",
+                    "1 validation error detected: Value '" + value + "' at 'logConfigurations."
+                            + (index + 1) + ".member." + member + "' failed to satisfy constraint: "
+                            + "Member must satisfy enum value set: " + enumSet, 400);
+        }
+    }
+
     // ──────────────────────────── Users ────────────────────────────
 
     public CognitoUser adminCreateUser(String userPoolId, String username, Map<String, String> attributes,
