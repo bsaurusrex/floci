@@ -53,6 +53,7 @@ public class DynamoDbJsonHandler {
             return dispatch(action, request, region);
         }
 
+        validateEnumsBeforeForward(action, request);
         Response forwarded = containerBackend.forwardIfDataPlane(action, request, region);
         if (forwarded != null) {
             return forwarded;
@@ -65,6 +66,52 @@ public class DynamoDbJsonHandler {
             mirrorControlPlane(action, request, region);
         }
         return response;
+    }
+
+    /**
+     * Rejects bad enum members before the request reaches the container.
+     *
+     * <p>AWS validates these ahead of the table lookup, so an invalid {@code ReturnValues} on a
+     * table that does not exist is a ValidationException, not a ResourceNotFoundException.
+     * DynamoDB local resolves the table first and answers ResourceNotFoundException, so Floci
+     * keeps this check in front of the forward rather than inheriting the weaker ordering.
+     */
+    private void validateEnumsBeforeForward(String action, JsonNode request) {
+        List<String> validationErrors = new ArrayList<>();
+        collectEnumError(request, "ReturnConsumedCapacity", VALID_RETURN_CONSUMED_CAPACITY,
+                "returnConsumedCapacity", "[INDEXES, TOTAL, NONE]", validationErrors);
+        collectEnumError(request, "ReturnItemCollectionMetrics", VALID_RETURN_ITEM_COLLECTION_METRICS,
+                "returnItemCollectionMetrics", "[SIZE, NONE]", validationErrors);
+
+        switch (action) {
+            case "PutItem" -> collectEnumError(request, "ReturnValues", VALID_RETURN_VALUES_PUT,
+                    "returnValues", "[NONE, ALL_OLD]", validationErrors);
+            case "DeleteItem" -> collectEnumError(request, "ReturnValues", VALID_RETURN_VALUES_DELETE,
+                    "returnValues", "[NONE, ALL_OLD]", validationErrors);
+            case "UpdateItem" -> collectEnumError(request, "ReturnValues", VALID_RETURN_VALUES_UPDATE,
+                    "returnValues", "[NONE, ALL_OLD, ALL_NEW, UPDATED_OLD, UPDATED_NEW]",
+                    validationErrors);
+            default -> { }
+        }
+
+        if (!validationErrors.isEmpty()) {
+            int n = validationErrors.size();
+            throw new AwsException("ValidationException",
+                    n + " validation error" + (n > 1 ? "s" : "") + " detected: "
+                    + String.join("; ", validationErrors), 400);
+        }
+    }
+
+    private static void collectEnumError(JsonNode request, String member, Set<String> allowed,
+                                         String path, String rendered, List<String> errors) {
+        if (!request.has(member)) {
+            return;
+        }
+        String value = request.get(member).asText();
+        if (!allowed.contains(value)) {
+            errors.add("Value '" + value + "' at '" + path + "' failed to satisfy constraint: "
+                    + "Member must satisfy enum value set: " + rendered);
+        }
     }
 
     private void mirrorControlPlane(String action, JsonNode request, String region) {

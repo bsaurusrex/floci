@@ -198,8 +198,31 @@ These come from downloadable DynamoDB itself and apply only when `backend=contai
 | `TagResource` / `ListTagsOfResource` | Supported | Served by Floci; never reaches the container |
 | Point-in-time recovery | Supported | Served by Floci; DynamoDB local has no PITR |
 | `billingModeSummary` | Populated | Served by Floci |
-| Item collection metrics | Populated | Container returns nulls |
+| Item collection metrics | Populated | Container returns nulls, so `ReturnItemCollectionMetrics=SIZE` yields none |
 | `TransactionConflictException` | Raised | Never raised by DynamoDB local |
+
+Enum members that AWS validates ahead of the table lookup — `ReturnValues`,
+`ReturnConsumedCapacity`, `ReturnItemCollectionMetrics` — are checked by Floci before the
+request is forwarded, because DynamoDB local resolves the table first and would answer
+`ResourceNotFoundException` where AWS answers `ValidationException`.
+
+### Where the container is stricter than the native backend
+
+Two conformance cases fail in container mode because DynamoDB local rejects something the
+in-process engine allows, and on the documentation the container looks right:
+
+- **Unused `ExpressionAttributeNames`.** Supplying `#st` without referencing it in any
+  expression is rejected with `Value provided in ExpressionAttributeNames unused in
+  expressions`. The native backend accepts it.
+- **Mixing legacy and expression parameters.** `QueryFilter` alongside
+  `KeyConditionExpression` is rejected with `Can not use both expression and non-expression
+  parameters in the same request`. The native backend runs the query. The DynamoDB developer
+  guide is explicit that this combination is an error: "DynamoDB does not allow mixing legacy
+  conditional parameters and expression parameters in a single call."
+
+Both are pinned as passing by `compatibility-tests/sdk-test-node/tests/dynamodb-conformance.test.ts`,
+so they are recorded here rather than "fixed" — tightening the native engine to match would
+change behaviour those tests currently assert, and is a separate decision from adding a backend.
 
 ### Not yet mirrored
 
