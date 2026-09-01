@@ -115,6 +115,34 @@ Standalone `TagResource` rejects reserved `floci:*` keys. `ListTagsForResource` 
 | AdminRemoveUserFromGroup | Removes a user from a group. |
 | AdminListGroupsForUser | Lists the groups assigned to a user. |
 
+### Managed Login Branding
+
+| Action | Description |
+|--------|-------------|
+| CreateManagedLoginBranding | Creates the branding for an app client. |
+| DescribeManagedLoginBranding | Returns a branding by its id. |
+| DescribeManagedLoginBrandingByClient | Returns the branding attached to an app client. |
+| UpdateManagedLoginBranding | Updates a branding's settings, assets or provided-values flag. |
+| DeleteManagedLoginBranding | Deletes a branding from its app client. |
+
+One branding per app client: a second `CreateManagedLoginBranding` for the same client is
+rejected with `ManagedLoginBrandingExistsException`. `ManagedLoginBrandingId` must be a
+version 4 UUID, and a malformed one is rejected before the lookup, as AWS does.
+`Settings` is omitted from the response when the caller supplied none, while `Assets` is
+always returned. Members an update omits are left unchanged.
+
+Branding is presentation for the hosted UI, which Floci does not serve, so it is stored
+and returned rather than rendered. Two divergences follow from that:
+
+- **`Settings` is stored opaquely.** AWS validates it against a deep schema, rejecting
+  unknown properties with `Invalid settings provided. Validation errors: [{property:
+  $.components...., errorType: UnknownProperty}]`. That schema is not published, so Floci
+  accepts any object.
+- **`ReturnMergedResources` is not honoured.** Against AWS it merges Cognito's own default
+  settings and assets into the response: on a pool with 8 configured assets it returns 38.
+  Reproducing that needs Cognito's default corpus, so Floci returns the stored branding
+  either way.
+
 ## Well-Known And OAuth Endpoints
 
 | Endpoint                                             | Description                                                      |

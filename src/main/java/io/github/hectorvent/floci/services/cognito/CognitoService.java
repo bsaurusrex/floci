@@ -25,6 +25,7 @@ import io.github.hectorvent.floci.services.cognito.model.UserPool;
 import io.github.hectorvent.floci.services.cognito.model.UserPoolClient;
 import io.github.hectorvent.floci.services.cognito.model.UserPoolClientSecret;
 import io.github.hectorvent.floci.services.cognito.model.UserPoolDomain;
+import io.github.hectorvent.floci.services.cognito.model.ManagedLoginBranding;
 import io.github.hectorvent.floci.services.cognito.verification.CognitoMessageDispatcher;
 import io.github.hectorvent.floci.services.cognito.verification.VerificationCode;
 import io.github.hectorvent.floci.services.cognito.verification.VerificationCodeException;
@@ -68,6 +69,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 import static io.github.hectorvent.floci.core.common.ReservedTags.rejectUnknownReservedTags;
 
@@ -1363,6 +1365,96 @@ public class CognitoService implements ResourceProvider {
             case "cognito:user_status", "status" -> user.getUserStatus();
             default -> user.getAttributes().get(attrName);
         };
+    }
+
+    // ──────────────────────────── Managed Login Branding ────────────────────────────
+
+    private static final Pattern BRANDING_ID_PATTERN = Pattern.compile(
+            "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[4][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$");
+
+    public ManagedLoginBranding createManagedLoginBranding(String userPoolId, String clientId,
+                                                           boolean useCognitoProvidedValues,
+                                                           Map<String, Object> settings,
+                                                           List<Map<String, Object>> assets) {
+        UserPoolClient client = describeUserPoolClient(userPoolId, clientId);
+        if (client.getManagedLoginBranding() != null) {
+            throw new AwsException("ManagedLoginBrandingExistsException",
+                    "A ManagedLoginBranding already exists for client " + clientId, 400);
+        }
+
+        ManagedLoginBranding branding = new ManagedLoginBranding();
+        branding.setManagedLoginBrandingId(UUID.randomUUID().toString());
+        branding.setUserPoolId(userPoolId);
+        branding.setUseCognitoProvidedValues(useCognitoProvidedValues);
+        branding.setSettings(settings);
+        branding.setAssets(assets);
+        client.setManagedLoginBranding(branding);
+        clientStore.put(clientId, client);
+        return branding;
+    }
+
+    public ManagedLoginBranding describeManagedLoginBranding(String userPoolId, String brandingId) {
+        describeUserPool(userPoolId);
+        if (brandingId == null || !BRANDING_ID_PATTERN.matcher(brandingId).matches()) {
+            throw new AwsException("InvalidParameterException",
+                    "1 validation error detected: Value '" + brandingId + "' at 'managedLoginBrandingId' "
+                            + "failed to satisfy constraint: Member must satisfy regular expression "
+                            + "pattern: " + BRANDING_ID_PATTERN.pattern(), 400);
+        }
+        return findBrandingClient(userPoolId, brandingId).getManagedLoginBranding();
+    }
+
+    public ManagedLoginBranding describeManagedLoginBrandingByClient(String userPoolId, String clientId) {
+        UserPoolClient client = describeUserPoolClient(userPoolId, clientId);
+        ManagedLoginBranding branding = client.getManagedLoginBranding();
+        if (branding == null) {
+            throw new AwsException("ResourceNotFoundException",
+                    "ManagedLoginBranding for client " + clientId + " does not exist.", 400);
+        }
+        return branding;
+    }
+
+    /**
+     * Members the request omits are left as they were, matching the identity provider update
+     * semantics; an explicitly empty list or map is what clears them.
+     */
+    public ManagedLoginBranding updateManagedLoginBranding(String userPoolId, String brandingId,
+                                                           Boolean useCognitoProvidedValues,
+                                                           Map<String, Object> settings,
+                                                           List<Map<String, Object>> assets) {
+        describeManagedLoginBranding(userPoolId, brandingId);
+        UserPoolClient client = findBrandingClient(userPoolId, brandingId);
+        ManagedLoginBranding branding = client.getManagedLoginBranding();
+
+        if (useCognitoProvidedValues != null) {
+            branding.setUseCognitoProvidedValues(useCognitoProvidedValues);
+        }
+        if (settings != null) {
+            branding.setSettings(settings);
+        }
+        if (assets != null) {
+            branding.setAssets(assets);
+        }
+        branding.setLastModifiedDate(System.currentTimeMillis() / 1000L);
+        clientStore.put(client.getClientId(), client);
+        return branding;
+    }
+
+    public void deleteManagedLoginBranding(String userPoolId, String brandingId) {
+        describeManagedLoginBranding(userPoolId, brandingId);
+        UserPoolClient client = findBrandingClient(userPoolId, brandingId);
+        client.setManagedLoginBranding(null);
+        clientStore.put(client.getClientId(), client);
+    }
+
+    private UserPoolClient findBrandingClient(String userPoolId, String brandingId) {
+        return clientStore.scan(k -> true).stream()
+                .filter(c -> userPoolId.equals(c.getUserPoolId())
+                        && c.getManagedLoginBranding() != null
+                        && brandingId.equals(c.getManagedLoginBranding().getManagedLoginBrandingId()))
+                .findFirst()
+                .orElseThrow(() -> new AwsException("ResourceNotFoundException",
+                        "ManagedLoginBranding does not exist.", 400));
     }
 
     // ──────────────────────────── Groups ────────────────────────────

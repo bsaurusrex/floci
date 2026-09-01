@@ -15,11 +15,13 @@ import io.github.hectorvent.floci.services.cognito.model.UserPool;
 import io.github.hectorvent.floci.services.cognito.model.UserPoolClient;
 import io.github.hectorvent.floci.services.cognito.model.UserPoolClientSecret;
 import io.github.hectorvent.floci.services.cognito.model.UserPoolDomain;
+import io.github.hectorvent.floci.services.cognito.model.ManagedLoginBranding;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
 
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -72,6 +74,11 @@ public class CognitoJsonHandler {
             case "AdminEnableUser" -> handleAdminEnableUser(request);
             case "AdminDisableUser" -> handleAdminDisableUser(request);
             case "AdminLinkProviderForUser" -> handleAdminLinkProviderForUser(request);
+            case "CreateManagedLoginBranding" -> handleCreateManagedLoginBranding(request);
+            case "DescribeManagedLoginBranding" -> handleDescribeManagedLoginBranding(request);
+            case "DescribeManagedLoginBrandingByClient" -> handleDescribeManagedLoginBrandingByClient(request);
+            case "UpdateManagedLoginBranding" -> handleUpdateManagedLoginBranding(request);
+            case "DeleteManagedLoginBranding" -> handleDeleteManagedLoginBranding(request);
             case "ListUsers" -> handleListUsers(request);
             case "InitiateAuth" -> handleInitiateAuth(request);
             case "AdminInitiateAuth" -> handleAdminInitiateAuth(request);
@@ -499,6 +506,84 @@ public class CognitoJsonHandler {
     private Response handleAdminDisableUser(JsonNode request) {
         service.adminDisableUser(request.path("UserPoolId").asText(), request.path("Username").asText());
         return Response.ok(objectMapper.createObjectNode()).build();
+    }
+
+    private Response handleCreateManagedLoginBranding(JsonNode request) {
+        ManagedLoginBranding branding = service.createManagedLoginBranding(
+                request.path("UserPoolId").asText(),
+                request.path("ClientId").asText(),
+                request.path("UseCognitoProvidedValues").asBoolean(false),
+                readObjectMap(request, "Settings"),
+                readMapList(request, "Assets")
+        );
+        return brandingResponse(branding);
+    }
+
+    private Response handleDescribeManagedLoginBranding(JsonNode request) {
+        return brandingResponse(service.describeManagedLoginBranding(
+                request.path("UserPoolId").asText(),
+                request.path("ManagedLoginBrandingId").asText(null)));
+    }
+
+    private Response handleDescribeManagedLoginBrandingByClient(JsonNode request) {
+        return brandingResponse(service.describeManagedLoginBrandingByClient(
+                request.path("UserPoolId").asText(),
+                request.path("ClientId").asText()));
+    }
+
+    private Response handleUpdateManagedLoginBranding(JsonNode request) {
+        return brandingResponse(service.updateManagedLoginBranding(
+                request.path("UserPoolId").asText(),
+                request.path("ManagedLoginBrandingId").asText(null),
+                request.has("UseCognitoProvidedValues")
+                        ? request.path("UseCognitoProvidedValues").asBoolean() : null,
+                readObjectMap(request, "Settings"),
+                readMapList(request, "Assets")));
+    }
+
+    private Response handleDeleteManagedLoginBranding(JsonNode request) {
+        service.deleteManagedLoginBranding(
+                request.path("UserPoolId").asText(),
+                request.path("ManagedLoginBrandingId").asText(null));
+        return Response.ok(objectMapper.createObjectNode()).build();
+    }
+
+    private Response brandingResponse(ManagedLoginBranding branding) {
+        ObjectNode response = objectMapper.createObjectNode();
+        response.set("ManagedLoginBranding", managedLoginBrandingToNode(branding));
+        return Response.ok(response).build();
+    }
+
+    /** AWS omits Settings entirely when none was supplied, but always returns Assets. */
+    private ObjectNode managedLoginBrandingToNode(ManagedLoginBranding branding) {
+        ObjectNode node = objectMapper.createObjectNode();
+        node.put("ManagedLoginBrandingId", branding.getManagedLoginBrandingId());
+        node.put("UserPoolId", branding.getUserPoolId());
+        node.put("UseCognitoProvidedValues", branding.isUseCognitoProvidedValues());
+        if (branding.getSettings() != null) {
+            node.set("Settings", objectMapper.valueToTree(branding.getSettings()));
+        }
+        ArrayNode assets = node.putArray("Assets");
+        branding.getAssets().forEach(asset -> assets.add(objectMapper.valueToTree(asset)));
+        node.put("CreationDate", branding.getCreationDate());
+        node.put("LastModifiedDate", branding.getLastModifiedDate());
+        return node;
+    }
+
+    private Map<String, Object> readObjectMap(JsonNode request, String member) {
+        JsonNode node = request.get(member);
+        if (node == null || !node.isObject()) {
+            return null;
+        }
+        return objectMapper.convertValue(node, new TypeReference<LinkedHashMap<String, Object>>() {});
+    }
+
+    private List<Map<String, Object>> readMapList(JsonNode request, String member) {
+        JsonNode node = request.get(member);
+        if (node == null || !node.isArray()) {
+            return null;
+        }
+        return objectMapper.convertValue(node, new TypeReference<List<Map<String, Object>>>() {});
     }
 
     private Response handleAdminLinkProviderForUser(JsonNode request) {
