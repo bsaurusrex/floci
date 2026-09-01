@@ -148,6 +148,8 @@ describe('Cognito identity providers', () => {
       })
     );
 
+    // The SDK maps the wire `__type` onto `error.name` and puts the AWS text in
+    // `message`, so the exception has to be matched on the name.
     await expect(
       cognito.send(
         new CreateIdentityProviderCommand({
@@ -157,7 +159,7 @@ describe('Cognito identity providers', () => {
           ProviderDetails: { ...OIDC_DETAILS },
         })
       )
-    ).rejects.toThrow(/DuplicateProvider/);
+    ).rejects.toMatchObject({ name: 'DuplicateProviderException' });
 
     await expect(
       cognito.send(
@@ -168,7 +170,10 @@ describe('Cognito identity providers', () => {
           ProviderDetails: { client_id: 'x' },
         })
       )
-    ).rejects.toThrow(/enum value set/);
+    ).rejects.toMatchObject({
+      name: 'InvalidParameterException',
+      message: expect.stringContaining('Member must satisfy enum value set'),
+    });
 
     await cognito.send(
       new DeleteIdentityProviderCommand({
