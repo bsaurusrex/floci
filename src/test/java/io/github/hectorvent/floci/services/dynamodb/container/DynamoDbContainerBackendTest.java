@@ -283,4 +283,70 @@ class DynamoDbContainerBackendTest {
                 () -> backend.forwardIfDataPlane("TransactWriteItems", transact, "us-east-1"));
     }
 
+
+    @Test
+    void partiqlIsRefusedWhileAnyTableIsOrphaned() {
+        DynamoDbContainerBackend backend = backendWith("container");
+        ObjectNode error = MAPPER.createObjectNode();
+        error.put("__type", "com.amazon.coral.service#InternalFailure");
+        when(client.call(eq("DeleteTable"), any(), any()))
+                .thenReturn(new DynamoDbLocalClient.Result(500, error));
+
+        ObjectNode deleteRequest = MAPPER.createObjectNode();
+        deleteRequest.put("TableName", "Users");
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> backend.mirrorControlPlane("DeleteTable", deleteRequest, "us-east-1", null));
+
+        // The table name lives in the statement text, so per-table matching cannot see it.
+        ObjectNode statement = MAPPER.createObjectNode();
+        statement.put("Statement", "SELECT * FROM \"Users\" WHERE pk = 'a'");
+        AwsException thrown = org.junit.jupiter.api.Assertions.assertThrows(AwsException.class,
+                () -> backend.forwardIfDataPlane("ExecuteStatement", statement, "us-east-1"));
+        assertEquals("ResourceNotFoundException", thrown.getErrorCode());
+        verify(client, never()).call(eq("ExecuteStatement"), any(), any());
+    }
+
+    @Test
+    void partiqlFlowsAgainOnceTheOutstandingDropSucceeds() {
+        DynamoDbContainerBackend backend = backendWith("container");
+        ObjectNode error = MAPPER.createObjectNode();
+        error.put("__type", "com.amazon.coral.service#InternalFailure");
+        when(client.call(eq("DeleteTable"), any(), any()))
+                .thenReturn(new DynamoDbLocalClient.Result(500, error))
+                .thenReturn(new DynamoDbLocalClient.Result(200, MAPPER.createObjectNode()));
+        when(client.call(eq("ExecuteStatement"), any(), any()))
+                .thenReturn(new DynamoDbLocalClient.Result(200, MAPPER.createObjectNode()));
+
+        ObjectNode deleteRequest = MAPPER.createObjectNode();
+        deleteRequest.put("TableName", "Users");
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> backend.mirrorControlPlane("DeleteTable", deleteRequest, "us-east-1", null));
+
+        ObjectNode statement = MAPPER.createObjectNode();
+        statement.put("Statement", "SELECT * FROM \"Other\"");
+        assertEquals(200,
+                backend.forwardIfDataPlane("ExecuteStatement", statement, "us-east-1").getStatus());
+    }
+
+    @Test
+    void anOrphanInAnotherRegionDoesNotBlockPartiql() {
+        DynamoDbContainerBackend backend = backendWith("container");
+        ObjectNode error = MAPPER.createObjectNode();
+        error.put("__type", "com.amazon.coral.service#InternalFailure");
+        when(client.call(eq("DeleteTable"), any(), any()))
+                .thenReturn(new DynamoDbLocalClient.Result(500, error));
+        when(client.call(eq("ExecuteStatement"), any(), any()))
+                .thenReturn(new DynamoDbLocalClient.Result(200, MAPPER.createObjectNode()));
+
+        ObjectNode deleteRequest = MAPPER.createObjectNode();
+        deleteRequest.put("TableName", "Users");
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> backend.mirrorControlPlane("DeleteTable", deleteRequest, "us-east-1", null));
+
+        ObjectNode statement = MAPPER.createObjectNode();
+        statement.put("Statement", "SELECT * FROM \"Users\"");
+        assertEquals(200,
+                backend.forwardIfDataPlane("ExecuteStatement", statement, "eu-west-1").getStatus());
+    }
+
 }

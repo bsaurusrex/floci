@@ -242,7 +242,10 @@ tests assert, and is a separate decision from adding a backend.
 If the container refuses to drop a table Floci has already deleted, the backend fails closed: that
 table is recorded, the drop is retried on the next request that names it, and until it succeeds any
 forwarded read or write for that name is answered with `ResourceNotFoundException` rather than data
-from the deleted generation.
+from the deleted generation. PartiQL names its table inside the statement text, so while a drop is
+outstanding in a region every `ExecuteStatement`, `ExecuteTransaction` and `BatchExecuteStatement`
+in that region is refused rather than parsed: a statement form Floci's own parser does not accept
+but the container does would otherwise slip through.
 
 ### Not yet mirrored
 

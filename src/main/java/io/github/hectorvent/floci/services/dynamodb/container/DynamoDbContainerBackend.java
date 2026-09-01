@@ -54,6 +54,12 @@ public class DynamoDbContainerBackend {
             "ExecuteStatement", "ExecuteTransaction", "BatchExecuteStatement");
 
     /**
+     * Actions that name their tables inside PartiQL statement text rather than a TableName member.
+     */
+    private static final Set<String> PARTIQL_ACTIONS = Set.of(
+            "ExecuteStatement", "ExecuteTransaction", "BatchExecuteStatement");
+
+    /**
      * CreateTable members DynamoDB local does not model. Floci keeps serving all of them.
      */
     private static final List<String> UNSUPPORTED_CREATE_MEMBERS = List.of(
@@ -96,7 +102,7 @@ public class DynamoDbContainerBackend {
         if (!DATA_PLANE_ACTIONS.contains(action)) {
             return null;
         }
-        refuseOrphanedTables(request, region);
+        refuseOrphanedTables(action, request, region);
         DynamoDbLocalClient.Result result = client.call(action, request, region);
         // Errors are passed through verbatim: the container's codes and messages are the
         // reason for routing here in the first place.
@@ -111,8 +117,12 @@ public class DynamoDbContainerBackend {
      * the original failure may have been transient. If it still will not go, the request is refused
      * with what Floci's own metadata implies rather than served from the container.
      */
-    private void refuseOrphanedTables(JsonNode request, String region) {
+    private void refuseOrphanedTables(String action, JsonNode request, String region) {
         if (orphanedTables.isEmpty()) {
+            return;
+        }
+        if (PARTIQL_ACTIONS.contains(action)) {
+            refuseAllWhileAnyTableIsOrphaned(region);
             return;
         }
         for (String tableName : referencedTables(request)) {
@@ -127,6 +137,35 @@ public class DynamoDbContainerBackend {
                 throw new AwsException("ResourceNotFoundException",
                         "Requested resource not found", 400);
             }
+        }
+    }
+
+    /**
+     * Refuses PartiQL while any table is orphaned, after retrying every outstanding drop.
+     *
+     * <p>PartiQL names its table inside the statement text. Floci's own PartiQL parser could be
+     * pointed at it, but that parser is part of the engine this backend exists to bypass: a form it
+     * does not accept but the container does would silently reopen the hole. Refusing every
+     * statement while a drop is outstanding cannot be defeated that way, and the block clears as
+     * soon as the retry succeeds.
+     */
+    private void refuseAllWhileAnyTableIsOrphaned(String region) {
+        for (String orphanKey : Set.copyOf(orphanedTables)) {
+            if (!orphanKey.startsWith(region + "/")) {
+                continue;
+            }
+            try {
+                dropFromContainer(orphanKey.substring(region.length() + 1), region);
+                orphanedTables.remove(orphanKey);
+            } catch (RuntimeException e) {
+                LOG.debugv("Still cannot drop {0}, refusing PartiQL", orphanKey);
+            }
+        }
+        boolean stillOrphaned = orphanedTables.stream()
+                .anyMatch(orphanKey -> orphanKey.startsWith(region + "/"));
+        if (stillOrphaned) {
+            throw new AwsException("ResourceNotFoundException",
+                    "Requested resource not found", 400);
         }
     }
 
