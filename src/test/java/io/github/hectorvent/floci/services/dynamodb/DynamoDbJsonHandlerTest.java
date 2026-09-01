@@ -4,7 +4,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.github.hectorvent.floci.core.common.AwsException;
 import io.github.hectorvent.floci.core.storage.InMemoryStorage;
+import io.github.hectorvent.floci.services.dynamodb.container.DynamoDbContainerBackend;
 import io.github.hectorvent.floci.services.dynamodb.model.AttributeDefinition;
 import io.github.hectorvent.floci.services.dynamodb.model.KeySchemaElement;
 import io.github.hectorvent.floci.services.dynamodb.model.TableDefinition;
@@ -333,4 +335,32 @@ class DynamoDbJsonHandlerTest {
         assertEquals("None", reasons.get(0).get("Code").asText());
         assertNull(reasons.get(0).get("Message"), "non failed item must not have a Message field");
     }
+
+    /**
+     * Enum members AWS checks before the table lookup must not degrade to the container's
+     * ordering, which resolves the table first and answers ResourceNotFoundException.
+     */
+    @Test
+    void invalidEnumIsRejectedBeforeForwardingEvenWhenTheTableDoesNotExist() {
+        DynamoDbContainerBackend backend = org.mockito.Mockito.mock(DynamoDbContainerBackend.class);
+        org.mockito.Mockito.when(backend.isEnabled()).thenReturn(true);
+        DynamoDbJsonHandler containerHandler =
+                new DynamoDbJsonHandler(service, null, null, mapper, backend);
+
+        ObjectNode request = mapper.createObjectNode();
+        request.put("TableName", "NoSuchTable");
+        request.set("Item", item("userId", "u1"));
+        request.put("ReturnValues", "NOT_A_VALID_VALUE");
+
+        AwsException thrown = assertThrows(AwsException.class,
+                () -> containerHandler.handle("PutItem", request, "us-east-1"));
+        assertEquals("ValidationException", thrown.getErrorCode());
+        assertTrue(thrown.getMessage().contains("returnValues"), thrown.getMessage());
+
+        // The request must never have reached the container.
+        org.mockito.Mockito.verify(backend, org.mockito.Mockito.never())
+                .forwardIfDataPlane(org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+    }
+
 }
