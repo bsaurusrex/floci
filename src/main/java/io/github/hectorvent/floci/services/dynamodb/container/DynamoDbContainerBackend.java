@@ -213,6 +213,39 @@ public class DynamoDbContainerBackend {
     }
 
     /**
+     * Marks a table for refusal before Floci deletes its own copy.
+     *
+     * <p>Mirroring runs after the dispatch that removes Floci's metadata, so a request arriving
+     * between the two would otherwise find no marker and be forwarded to a table that still holds
+     * the old generation. Marking first closes that, at the cost of having to unwind when the
+     * delete Floci was asked for does not actually happen.
+     *
+     * @return true when this call installed the marker, so only that caller may remove it
+     */
+    public boolean beginDelete(JsonNode request, String region) {
+        String tableName = request.path("TableName").asText(null);
+        if (tableName == null) {
+            return false;
+        }
+        String accountId = regionResolver.getAccountId();
+        return orphanedTables.putIfAbsent(key(accountId, region, tableName),
+                new OrphanedTable(accountId, region, tableName)) == null;
+    }
+
+    /**
+     * Removes a marker installed by {@link #beginDelete} when the delete did not go ahead.
+     *
+     * <p>Only ever called with the result of that method, so a marker left by an earlier genuine
+     * drop failure is never cleared by a DeleteTable that Floci itself rejected.
+     */
+    public void abandonDelete(JsonNode request, String region) {
+        String tableName = request.path("TableName").asText(null);
+        if (tableName != null) {
+            orphanedTables.remove(key(regionResolver.getAccountId(), region, tableName));
+        }
+    }
+
+    /**
      * Mirrors a control-plane change into the container after Floci has applied it.
      *
      * @param table Floci's authoritative definition, already updated

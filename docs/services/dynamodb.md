@@ -239,8 +239,10 @@ Both are currently pinned as *passing* by
 rather than "fixed": tightening the native engine to match real AWS would change behaviour those
 tests assert, and is a separate decision from adding a backend.
 
-The table is marked from the moment the drop is issued, not only when it fails, so a read arriving
-while the container delete is still in flight cannot be answered from the generation being removed.
+The table is marked before Floci deletes its own copy, not when the container drop is issued and not
+only when that drop fails, so no read between the two can be answered from the generation being
+removed. The mark is withdrawn if Floci then rejects the delete, for instance because deletion
+protection is on.
 
 If the container refuses to drop a table Floci has already deleted, the backend fails closed: that
 table is recorded, the drop is retried on the next request that names it, and until it succeeds any

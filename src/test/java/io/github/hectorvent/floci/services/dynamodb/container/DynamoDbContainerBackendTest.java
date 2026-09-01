@@ -453,4 +453,58 @@ class DynamoDbContainerBackendTest {
         assertEquals(200, backend.forwardIfDataPlane("GetItem", read, "us-east-1").getStatus());
     }
 
+
+    @Test
+    void beginDeleteRefusesForwardsBeforeFlociHasDroppedItsOwnCopy() {
+        DynamoDbContainerBackend backend = backendWith("container");
+        ObjectNode request = MAPPER.createObjectNode();
+        request.put("TableName", "Users");
+
+        assertTrue(backend.beginDelete(request, "us-east-1"));
+
+        ObjectNode read = MAPPER.createObjectNode();
+        read.put("TableName", "Users");
+        when(client.call(eq(ACCOUNT), eq("DeleteTable"), any(), any()))
+                .thenReturn(new DynamoDbLocalClient.Result(500, MAPPER.createObjectNode()));
+        AwsException thrown = org.junit.jupiter.api.Assertions.assertThrows(AwsException.class,
+                () -> backend.forwardIfDataPlane("GetItem", read, "us-east-1"));
+        assertEquals("ResourceNotFoundException", thrown.getErrorCode());
+        verify(client, never()).call(eq("GetItem"), any(), any());
+    }
+
+    @Test
+    void abandonDeleteRestoresForwardingWhenFlociRejectsTheDelete() {
+        DynamoDbContainerBackend backend = backendWith("container");
+        ObjectNode request = MAPPER.createObjectNode();
+        request.put("TableName", "Users");
+        when(client.call(eq("GetItem"), any(), any()))
+                .thenReturn(new DynamoDbLocalClient.Result(200, MAPPER.createObjectNode()));
+
+        assertTrue(backend.beginDelete(request, "us-east-1"));
+        // Floci refused the delete, for instance deletion protection, so the table still exists.
+        backend.abandonDelete(request, "us-east-1");
+
+        ObjectNode read = MAPPER.createObjectNode();
+        read.put("TableName", "Users");
+        assertEquals(200, backend.forwardIfDataPlane("GetItem", read, "us-east-1").getStatus());
+    }
+
+    @Test
+    void beginDeleteDoesNotClaimAMarkerLeftByAnEarlierFailedDrop() {
+        DynamoDbContainerBackend backend = backendWith("container");
+        ObjectNode error = MAPPER.createObjectNode();
+        error.put("__type", "com.amazon.coral.service#InternalFailure");
+        when(client.call(eq(ACCOUNT), eq("DeleteTable"), any(), any()))
+                .thenReturn(new DynamoDbLocalClient.Result(500, error));
+
+        ObjectNode deleteRequest = MAPPER.createObjectNode();
+        deleteRequest.put("TableName", "Users");
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> backend.mirrorControlPlane("DeleteTable", deleteRequest, "us-east-1", null));
+
+        // A second DeleteTable that Floci rejects must not clear the genuine orphan, so its
+        // abandon is never invoked: beginDelete reports it did not install the marker.
+        assertFalse(backend.beginDelete(deleteRequest, "us-east-1"));
+    }
+
 }
