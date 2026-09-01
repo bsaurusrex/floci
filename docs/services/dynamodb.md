@@ -244,6 +244,11 @@ is refused with `ResourceNotFoundException` rather than answered from a copy the
 hold. The control plane is the authority and its delete is atomic, so there is no window in which a
 deleted table can still be read, and no separate tracking of in-flight deletions to get wrong.
 
+That check is only as good as the agreement between the two sides, so a CreateTable whose container
+mirror cannot be established withdraws the table Floci had already committed. The control plane
+never advertises a table whose data plane is not usable, and a request cannot land on whatever the
+container happens to still hold under that name.
+
 PartiQL names its table inside the statement text, where that check cannot see it. If a container
 drop fails, every `ExecuteStatement`, `ExecuteTransaction` and `BatchExecuteStatement` in the
 affected account and region is refused until the drop goes through, which is retried on each

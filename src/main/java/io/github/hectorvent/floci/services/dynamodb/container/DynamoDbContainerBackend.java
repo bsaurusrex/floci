@@ -246,19 +246,31 @@ public class DynamoDbContainerBackend {
             mirror.set("StreamSpecification", spec);
         }
 
-        DynamoDbLocalClient.Result result = client.call("CreateTable", mirror, region);
-        if ("ResourceInUseException".equals(result.errorCode()) && !result.isSuccess()) {
-            // A table of this name survived in the container, which means an earlier DeleteTable
-            // mirror did not land. Floci has already committed the new table, so the stale one and
-            // its items must go, otherwise reads would serve data from the previous generation.
-            LOG.warnv("Dropping a stale container table for {0} left by a failed delete",
-                    table.getTableName());
-            dropFromContainer(table.getTableName(), region);
+        DynamoDbLocalClient.Result result;
+        try {
             result = client.call("CreateTable", mirror, region);
-        }
-        if (!result.isSuccess()) {
-            throw new IllegalStateException("DynamoDB container backend rejected CreateTable for "
-                    + table.getTableName() + ": " + result.errorCode() + " " + result.errorMessage());
+            if ("ResourceInUseException".equals(result.errorCode()) && !result.isSuccess()) {
+                // A table of this name survived in the container, which means an earlier
+                // DeleteTable mirror did not land. Floci has already committed the new table, so
+                // the stale one and its items must go, otherwise reads would serve data from the
+                // previous generation.
+                LOG.warnv("Dropping a stale container table for {0} left by a failed delete",
+                        table.getTableName());
+                dropFromContainer(table.getTableName(), region);
+                result = client.call("CreateTable", mirror, region);
+            }
+            if (!result.isSuccess()) {
+                throw new IllegalStateException("DynamoDB container backend rejected CreateTable "
+                        + "for " + table.getTableName() + ": " + result.errorCode() + " "
+                        + result.errorMessage());
+            }
+        } catch (RuntimeException e) {
+            // Floci committed this table before the mirror ran, and forwards are gated on Floci
+            // knowing it. Leaving the metadata in place would point every request at whatever the
+            // container still holds under that name, which is the previous generation. Withdraw it
+            // so the control plane keeps telling the truth about what is usable.
+            withdrawFlociTable(table.getTableName(), region);
+            throw e;
         }
 
         failedDrops.remove(key(region, table.getTableName()));
@@ -268,6 +280,20 @@ public class DynamoDbContainerBackend {
                 mirroredStreamArns.put(key(region, table.getTableName()), streamArn);
                 streamPump.register(regionResolver.getAccountId(), table, region, streamArn);
             }
+        }
+    }
+
+    /**
+     * Removes a table Floci committed whose container mirror could not be established.
+     *
+     * <p>Best effort: the mirror failure is already being reported, and masking it with a
+     * secondary failure from the withdrawal would lose the actionable error.
+     */
+    private void withdrawFlociTable(String tableName, String region) {
+        try {
+            dynamoDbService.deleteTable(tableName, region);
+        } catch (RuntimeException e) {
+            LOG.warnv(e, "Could not withdraw {0} after its container mirror failed", tableName);
         }
     }
 

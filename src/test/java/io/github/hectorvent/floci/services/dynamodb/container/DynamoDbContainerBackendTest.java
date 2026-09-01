@@ -392,4 +392,46 @@ class DynamoDbContainerBackendTest {
         verify(client, never()).call(eq("TransactWriteItems"), any(), any());
     }
 
+
+    @Test
+    void aFailedCreateMirrorWithdrawsTheTableFlociAlreadyCommitted() {
+        DynamoDbContainerBackend backend = backendWith("container");
+        ObjectNode error = MAPPER.createObjectNode();
+        error.put("__type", "com.amazon.coral.validate#ValidationException");
+        error.put("message", "nope");
+        when(client.call(eq("CreateTable"), any(), any()))
+                .thenReturn(new DynamoDbLocalClient.Result(400, error));
+
+        ObjectNode request = MAPPER.createObjectNode();
+        request.put("TableName", "Users");
+
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> backend.mirrorControlPlane("CreateTable", request, "us-east-1", table("Users")));
+
+        // Forwards are gated on Floci knowing the table, so the metadata must not survive a mirror
+        // it could not establish: otherwise reads land on whatever the container still holds.
+        verify(dynamoDbService).deleteTable("Users", "us-east-1");
+    }
+
+    @Test
+    void aFailedStaleDropDuringRecreateAlsoWithdrawsTheTable() {
+        DynamoDbContainerBackend backend = backendWith("container");
+        ObjectNode inUse = MAPPER.createObjectNode();
+        inUse.put("__type", "com.amazonaws.dynamodb.v20120810#ResourceInUseException");
+        ObjectNode dropError = MAPPER.createObjectNode();
+        dropError.put("__type", "com.amazon.coral.service#InternalFailure");
+        when(client.call(eq("CreateTable"), any(), any()))
+                .thenReturn(new DynamoDbLocalClient.Result(400, inUse));
+        when(client.call(eq(ACCOUNT), eq("DeleteTable"), any(), any()))
+                .thenReturn(new DynamoDbLocalClient.Result(500, dropError));
+
+        ObjectNode request = MAPPER.createObjectNode();
+        request.put("TableName", "Users");
+
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> backend.mirrorControlPlane("CreateTable", request, "us-east-1", table("Users")));
+
+        verify(dynamoDbService).deleteTable("Users", "us-east-1");
+    }
+
 }
