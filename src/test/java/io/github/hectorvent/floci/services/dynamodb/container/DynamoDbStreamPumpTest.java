@@ -34,12 +34,12 @@ class DynamoDbStreamPumpTest {
         ObjectNode described = MAPPER.createObjectNode();
         described.putObject("StreamDescription").putArray("Shards")
                 .addObject().put("ShardId", "shard-1");
-        when(client.callStreams(eq("DescribeStream"), any(), any()))
+        when(client.callStreams(eq("000000000000"), eq("DescribeStream"), any(), any()))
                 .thenReturn(new DynamoDbLocalClient.Result(200, described));
 
         ObjectNode opened = MAPPER.createObjectNode();
         opened.put("ShardIterator", "iterator-1");
-        when(client.callStreams(eq("GetShardIterator"), any(), any()))
+        when(client.callStreams(eq("000000000000"), eq("GetShardIterator"), any(), any()))
                 .thenReturn(new DynamoDbLocalClient.Result(200, opened));
     }
 
@@ -59,11 +59,11 @@ class DynamoDbStreamPumpTest {
     @Test
     void recordsAreReplayedIntoFlociStreamServiceWithBothImages() {
         stubShardDiscovery();
-        when(client.callStreams(eq("GetRecords"), any(), any()))
+        when(client.callStreams(eq("000000000000"), eq("GetRecords"), any(), any()))
                 .thenReturn(new DynamoDbLocalClient.Result(200, recordsResponse("001", "iterator-2")));
 
         TableDefinition definition = table();
-        pump.drain(new DynamoDbStreamPump.StreamCursor(definition, "us-east-1", "arn:stream/1"));
+        pump.drain(new DynamoDbStreamPump.StreamCursor("000000000000", definition, "us-east-1", "arn:stream/1"));
 
         ArgumentCaptor<JsonNode> newImage = ArgumentCaptor.forClass(JsonNode.class);
         verify(streamService).captureEvent(
@@ -75,10 +75,10 @@ class DynamoDbStreamPumpTest {
     void aLostIteratorResumesAfterTheLastRecordInsteadOfReplayingTheStream() {
         stubShardDiscovery();
         DynamoDbStreamPump.StreamCursor cursor =
-                new DynamoDbStreamPump.StreamCursor(table(), "us-east-1", "arn:stream/1");
+                new DynamoDbStreamPump.StreamCursor("000000000000", table(), "us-east-1", "arn:stream/1");
 
         // First drain consumes one record, then the iterator is lost.
-        when(client.callStreams(eq("GetRecords"), any(), any()))
+        when(client.callStreams(eq("000000000000"), eq("GetRecords"), any(), any()))
                 .thenReturn(new DynamoDbLocalClient.Result(200, recordsResponse("042", null)));
         pump.drain(cursor);
 
@@ -87,7 +87,7 @@ class DynamoDbStreamPumpTest {
         pump.drain(cursor);
 
         ArgumentCaptor<JsonNode> iteratorRequest = ArgumentCaptor.forClass(JsonNode.class);
-        verify(client, times(2)).callStreams(eq("GetShardIterator"), iteratorRequest.capture(), any());
+        verify(client, times(2)).callStreams(eq("000000000000"), eq("GetShardIterator"), iteratorRequest.capture(), any());
         JsonNode reopen = iteratorRequest.getAllValues().get(1);
         assertEquals("AFTER_SEQUENCE_NUMBER", reopen.path("ShardIteratorType").asText());
         assertEquals("042", reopen.path("SequenceNumber").asText());
@@ -102,15 +102,15 @@ class DynamoDbStreamPumpTest {
         stubShardDiscovery();
         ObjectNode expired = MAPPER.createObjectNode();
         expired.put("__type", "com.amazonaws.dynamodb.v20120810#ExpiredIteratorException");
-        when(client.callStreams(eq("GetRecords"), any(), any()))
+        when(client.callStreams(eq("000000000000"), eq("GetRecords"), any(), any()))
                 .thenReturn(new DynamoDbLocalClient.Result(400, expired));
 
         DynamoDbStreamPump.StreamCursor cursor =
-                new DynamoDbStreamPump.StreamCursor(table(), "us-east-1", "arn:stream/1");
+                new DynamoDbStreamPump.StreamCursor("000000000000", table(), "us-east-1", "arn:stream/1");
         pump.drain(cursor);
         pump.drain(cursor);
 
         // Two drains, two reopen attempts: the failure is recoverable, not terminal.
-        verify(client, times(2)).callStreams(eq("GetShardIterator"), any(), any());
+        verify(client, times(2)).callStreams(eq("000000000000"), eq("GetShardIterator"), any(), any());
     }
 }

@@ -54,15 +54,16 @@ public class DynamoDbStreamPump {
     /**
      * Starts replaying the container stream backing {@code table}.
      */
-    public void register(TableDefinition table, String region, String containerStreamArn) {
-        String key = key(region, table.getTableName());
-        cursors.put(key, new StreamCursor(table, region, containerStreamArn));
+    public void register(String accountId, TableDefinition table, String region,
+                         String containerStreamArn) {
+        String key = key(accountId, region, table.getTableName());
+        cursors.put(key, new StreamCursor(accountId, table, region, containerStreamArn));
         ensurePollerRunning();
         LOG.infov("Pumping DynamoDB container stream for {0} ({1})", table.getTableName(), containerStreamArn);
     }
 
-    public void deregister(String region, String tableName) {
-        cursors.remove(key(region, tableName));
+    public void deregister(String accountId, String region, String tableName) {
+        cursors.remove(key(accountId, region, tableName));
     }
 
     private void ensurePollerRunning() {
@@ -108,7 +109,7 @@ public class DynamoDbStreamPump {
         request.put("ShardIterator", iterator);
         request.put("Limit", BATCH_LIMIT);
 
-        DynamoDbLocalClient.Result result = client.callStreams("GetRecords", request, cursor.region);
+        DynamoDbLocalClient.Result result = client.callStreams(cursor.accountId, "GetRecords", request, cursor.region);
         if (!result.isSuccess()) {
             // A trimmed or expired iterator is recoverable: reopen on the next tick.
             LOG.debugv("GetRecords on the container stream for {0} failed: {1}",
@@ -132,7 +133,7 @@ public class DynamoDbStreamPump {
     private String openIterator(StreamCursor cursor) {
         ObjectNode describe = objectMapper.createObjectNode();
         describe.put("StreamArn", cursor.containerStreamArn);
-        DynamoDbLocalClient.Result described = client.callStreams("DescribeStream", describe, cursor.region);
+        DynamoDbLocalClient.Result described = client.callStreams(cursor.accountId, "DescribeStream", describe, cursor.region);
         if (!described.isSuccess()) {
             return null;
         }
@@ -159,7 +160,7 @@ public class DynamoDbStreamPump {
             iteratorRequest.put("ShardIteratorType", "AFTER_SEQUENCE_NUMBER");
             iteratorRequest.put("SequenceNumber", cursor.lastSequenceNumber);
         }
-        DynamoDbLocalClient.Result opened = client.callStreams("GetShardIterator", iteratorRequest, cursor.region);
+        DynamoDbLocalClient.Result opened = client.callStreams(cursor.accountId, "GetShardIterator", iteratorRequest, cursor.region);
         if (!opened.isSuccess()) {
             return null;
         }
@@ -193,11 +194,14 @@ public class DynamoDbStreamPump {
         }
     }
 
-    private static String key(String region, String tableName) {
-        return region + "/" + tableName;
+    private static String key(String accountId, String region, String tableName) {
+        // Two accounts may hold the same table name in the same region, and the container keeps
+        // their stores apart, so the cursor for one must not displace the other's.
+        return accountId + "/" + region + "/" + tableName;
     }
 
     static final class StreamCursor {
+        private final String accountId;
         private final TableDefinition table;
         private final String region;
         private final String containerStreamArn;
@@ -205,7 +209,9 @@ public class DynamoDbStreamPump {
         /** Last record handed to Floci, so a reopened iterator resumes instead of replaying. */
         private volatile String lastSequenceNumber;
 
-        StreamCursor(TableDefinition table, String region, String containerStreamArn) {
+        StreamCursor(String accountId, TableDefinition table, String region,
+                     String containerStreamArn) {
+            this.accountId = accountId;
             this.table = table;
             this.region = region;
             this.containerStreamArn = containerStreamArn;

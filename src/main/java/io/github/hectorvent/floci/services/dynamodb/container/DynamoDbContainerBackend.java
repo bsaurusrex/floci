@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.github.hectorvent.floci.config.EmulatorConfig;
 import io.github.hectorvent.floci.core.common.AwsException;
+import io.github.hectorvent.floci.core.common.RegionResolver;
 import io.github.hectorvent.floci.services.dynamodb.DynamoDbStreamService;
 import io.github.hectorvent.floci.services.dynamodb.model.TableDefinition;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -70,22 +71,33 @@ public class DynamoDbContainerBackend {
     private final DynamoDbLocalClient client;
     private final DynamoDbStreamPump streamPump;
     private final ObjectMapper objectMapper;
+    private final RegionResolver regionResolver;
 
-    /** region + "/" + tableName of tables already mirrored, so UpdateTable can tell new from known. */
+    /** Tables already mirrored, so UpdateTable can tell new from known. Keyed by account. */
     private final Map<String, String> mirroredStreamArns = new ConcurrentHashMap<>();
 
-    /** Tables Floci has deleted that the container would not drop. Forwards for these are refused. */
-    private final Set<String> orphanedTables = ConcurrentHashMap.newKeySet();
+    /**
+     * Tables Floci has deleted that the container would not drop. Forwards naming them are refused.
+     *
+     * <p>Keyed and retried by the account that owns them. The account selects the store inside the
+     * container, so retrying under a later caller's account would drop that caller's live table.
+     */
+    private final Map<String, OrphanedTable> orphanedTables = new ConcurrentHashMap<>();
+
+    /** A table left in the container after Floci deleted its own copy. */
+    private record OrphanedTable(String accountId, String region, String tableName) { }
 
     @Inject
     public DynamoDbContainerBackend(EmulatorConfig config,
                                     DynamoDbLocalClient client,
                                     DynamoDbStreamPump streamPump,
-                                    ObjectMapper objectMapper) {
+                                    ObjectMapper objectMapper,
+                                    RegionResolver regionResolver) {
         this.config = config;
         this.client = client;
         this.streamPump = streamPump;
         this.objectMapper = objectMapper;
+        this.regionResolver = regionResolver;
     }
 
     public boolean isEnabled() {
@@ -127,11 +139,12 @@ public class DynamoDbContainerBackend {
         }
         for (String tableName : referencedTables(request)) {
             String orphanKey = key(region, tableName);
-            if (!orphanedTables.contains(orphanKey)) {
+            OrphanedTable orphan = orphanedTables.get(orphanKey);
+            if (orphan == null) {
                 continue;
             }
             try {
-                dropFromContainer(tableName, region);
+                dropAs(orphan);
                 orphanedTables.remove(orphanKey);
             } catch (RuntimeException e) {
                 throw new AwsException("ResourceNotFoundException",
@@ -150,19 +163,21 @@ public class DynamoDbContainerBackend {
      * soon as the retry succeeds.
      */
     private void refuseAllWhileAnyTableIsOrphaned(String region) {
-        for (String orphanKey : Set.copyOf(orphanedTables)) {
-            if (!orphanKey.startsWith(region + "/")) {
+        String accountId = regionResolver.getAccountId();
+        for (Map.Entry<String, OrphanedTable> entry : Map.copyOf(orphanedTables).entrySet()) {
+            OrphanedTable orphan = entry.getValue();
+            if (!orphan.accountId().equals(accountId) || !orphan.region().equals(region)) {
                 continue;
             }
             try {
-                dropFromContainer(orphanKey.substring(region.length() + 1), region);
-                orphanedTables.remove(orphanKey);
+                dropAs(orphan);
+                orphanedTables.remove(entry.getKey());
             } catch (RuntimeException e) {
-                LOG.debugv("Still cannot drop {0}, refusing PartiQL", orphanKey);
+                LOG.debugv("Still cannot drop {0}, refusing PartiQL", entry.getKey());
             }
         }
-        boolean stillOrphaned = orphanedTables.stream()
-                .anyMatch(orphanKey -> orphanKey.startsWith(region + "/"));
+        boolean stillOrphaned = orphanedTables.values().stream()
+                .anyMatch(o -> o.accountId().equals(accountId) && o.region().equals(region));
         if (stillOrphaned) {
             throw new AwsException("ResourceNotFoundException",
                     "Requested resource not found", 400);
@@ -255,7 +270,7 @@ public class DynamoDbContainerBackend {
             String streamArn = result.body().path("TableDescription").path("LatestStreamArn").asText(null);
             if (streamArn != null) {
                 mirroredStreamArns.put(key(region, table.getTableName()), streamArn);
-                streamPump.register(table, region, streamArn);
+                streamPump.register(regionResolver.getAccountId(), table, region, streamArn);
             }
         }
     }
@@ -265,7 +280,7 @@ public class DynamoDbContainerBackend {
         if (tableName == null) {
             return;
         }
-        streamPump.deregister(region, tableName);
+        streamPump.deregister(regionResolver.getAccountId(), region, tableName);
         mirroredStreamArns.remove(key(region, tableName));
         dropFromContainer(tableName, region);
     }
@@ -278,13 +293,21 @@ public class DynamoDbContainerBackend {
      * forwarded reads, and would collide with the next table of the same name.
      */
     private void dropFromContainer(String tableName, String region) {
+        dropAs(new OrphanedTable(regionResolver.getAccountId(), region, tableName));
+    }
+
+    /** Drops a table under the account that owns it, not the account making the current request. */
+    private void dropAs(OrphanedTable orphan) {
+        String tableName = orphan.tableName();
+        String region = orphan.region();
         ObjectNode mirror = objectMapper.createObjectNode();
         mirror.put("TableName", tableName);
-        DynamoDbLocalClient.Result result = client.call("DeleteTable", mirror, region);
+        DynamoDbLocalClient.Result result =
+                client.call(orphan.accountId(), "DeleteTable", mirror, region);
         if (result.isSuccess() || "ResourceNotFoundException".equals(result.errorCode())) {
             return;
         }
-        orphanedTables.add(key(region, tableName));
+        orphanedTables.put(key(orphan.accountId(), region, tableName), orphan);
         throw new IllegalStateException("DynamoDB container backend could not drop " + tableName
                 + ", its items would stay readable: " + result.errorCode() + " "
                 + result.errorMessage());
@@ -317,10 +340,10 @@ public class DynamoDbContainerBackend {
             String streamArn = result.body().path("TableDescription").path("LatestStreamArn").asText(null);
             if (streamArn != null) {
                 mirroredStreamArns.put(key(region, table.getTableName()), streamArn);
-                streamPump.register(table, region, streamArn);
+                streamPump.register(regionResolver.getAccountId(), table, region, streamArn);
             }
         } else if (request.path("StreamSpecification").has("StreamEnabled")) {
-            streamPump.deregister(region, table.getTableName());
+            streamPump.deregister(regionResolver.getAccountId(), region, table.getTableName());
         }
     }
 
@@ -332,8 +355,12 @@ public class DynamoDbContainerBackend {
         }
     }
 
-    private static String key(String region, String tableName) {
-        return region + "/" + tableName;
+    private static String key(String accountId, String region, String tableName) {
+        return accountId + "/" + region + "/" + tableName;
+    }
+
+    private String key(String region, String tableName) {
+        return key(regionResolver.getAccountId(), region, tableName);
     }
 
     /**

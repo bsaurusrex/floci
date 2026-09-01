@@ -61,17 +61,33 @@ public class DynamoDbLocalClient {
      * Sends a DynamoDB action to the container and returns the raw result.
      */
     public Result call(String action, JsonNode body, String region) {
-        return send(TARGET_PREFIX + action, body, region);
+        return call(regionResolver.getAccountId(), action, body, region);
+    }
+
+    /**
+     * Sends a DynamoDB action on behalf of a specific account rather than the calling one.
+     *
+     * <p>The account picks the store inside the container, so anything retrying work queued by an
+     * earlier caller must name that caller's account explicitly. Using the current request's
+     * account would operate on a different account's tables.
+     */
+    public Result call(String accountId, String action, JsonNode body, String region) {
+        return send(accountId, TARGET_PREFIX + action, body, region);
     }
 
     /**
      * Sends a DynamoDB Streams action to the container and returns the raw result.
      */
     public Result callStreams(String action, JsonNode body, String region) {
-        return send(STREAMS_TARGET_PREFIX + action, body, region);
+        return callStreams(regionResolver.getAccountId(), action, body, region);
     }
 
-    private Result send(String target, JsonNode body, String region) {
+    /** Streams counterpart of {@link #call(String, String, JsonNode, String)}. */
+    public Result callStreams(String accountId, String action, JsonNode body, String region) {
+        return send(accountId, STREAMS_TARGET_PREFIX + action, body, region);
+    }
+
+    private Result send(String accountId, String target, JsonNode body, String region) {
         String effectiveRegion = region != null ? region : regionResolver.getDefaultRegion();
         String payload;
         try {
@@ -85,7 +101,7 @@ public class DynamoDbLocalClient {
                 .timeout(Duration.ofSeconds(30))
                 .header("Content-Type", CONTENT_TYPE)
                 .header("X-Amz-Target", target)
-                .header("Authorization", authorizationHeader(effectiveRegion))
+                .header("Authorization", authorizationHeader(accountId, effectiveRegion))
                 .POST(HttpRequest.BodyPublishers.ofString(payload))
                 .build();
 
@@ -115,9 +131,9 @@ public class DynamoDbLocalClient {
         return new Result(response.statusCode(), parsed);
     }
 
-    private String authorizationHeader(String region) {
+    private String authorizationHeader(String accountId, String region) {
         String scopeDate = SCOPE_DATE.format(LocalDate.now(ZoneOffset.UTC));
-        return "AWS4-HMAC-SHA256 Credential=" + regionResolver.getAccountId() + "/" + scopeDate
+        return "AWS4-HMAC-SHA256 Credential=" + accountId + "/" + scopeDate
                 + "/" + region + "/dynamodb/aws4_request, "
                 + "SignedHeaders=content-type;host;x-amz-target, "
                 + "Signature=" + PLACEHOLDER_SIGNATURE;

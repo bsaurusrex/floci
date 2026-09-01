@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.github.hectorvent.floci.config.EmulatorConfig;
 import io.github.hectorvent.floci.core.common.AwsException;
+import io.github.hectorvent.floci.core.common.RegionResolver;
 import io.github.hectorvent.floci.services.dynamodb.model.TableDefinition;
 import jakarta.ws.rs.core.Response;
 import org.junit.jupiter.api.Test;
@@ -30,14 +31,23 @@ class DynamoDbContainerBackendTest {
     private final DynamoDbLocalClient client = mock(DynamoDbLocalClient.class);
     private final DynamoDbStreamPump streamPump = mock(DynamoDbStreamPump.class);
 
+    private static final String ACCOUNT = "000000000000";
+
+    private final RegionResolver regionResolver = mock(RegionResolver.class);
+
     private DynamoDbContainerBackend backendWith(String configured) {
+        return backendWith(configured, ACCOUNT);
+    }
+
+    private DynamoDbContainerBackend backendWith(String configured, String accountId) {
         EmulatorConfig config = mock(EmulatorConfig.class);
         EmulatorConfig.ServicesConfig services = mock(EmulatorConfig.ServicesConfig.class);
         EmulatorConfig.DynamoDbServiceConfig ddb = mock(EmulatorConfig.DynamoDbServiceConfig.class);
         lenient().when(config.services()).thenReturn(services);
         lenient().when(services.dynamodb()).thenReturn(ddb);
         lenient().when(ddb.backend()).thenReturn(configured);
-        return new DynamoDbContainerBackend(config, client, streamPump, MAPPER);
+        lenient().when(regionResolver.getAccountId()).thenReturn(accountId);
+        return new DynamoDbContainerBackend(config, client, streamPump, MAPPER, regionResolver);
     }
 
     private static TableDefinition table(String name) {
@@ -134,7 +144,7 @@ class DynamoDbContainerBackendTest {
         // mirror and narrows again in DynamoDbStreamService.captureEvent.
         assertEquals("NEW_AND_OLD_IMAGES",
                 mirrored.getValue().path("StreamSpecification").path("StreamViewType").asText());
-        verify(streamPump).register(definition, "us-east-1", "arn:stream/1");
+        verify(streamPump).register(ACCOUNT, definition, "us-east-1", "arn:stream/1");
         assertTrue(backend.isMirrored("us-east-1", "Users"));
     }
 
@@ -143,7 +153,7 @@ class DynamoDbContainerBackendTest {
         DynamoDbContainerBackend backend = backendWith("container");
         ObjectNode notFound = MAPPER.createObjectNode();
         notFound.put("__type", "com.amazonaws.dynamodb.v20120810#ResourceNotFoundException");
-        when(client.call(eq("DeleteTable"), any(), any()))
+        when(client.call(eq(ACCOUNT), eq("DeleteTable"), any(), any()))
                 .thenReturn(new DynamoDbLocalClient.Result(400, notFound));
 
         ObjectNode request = MAPPER.createObjectNode();
@@ -151,7 +161,7 @@ class DynamoDbContainerBackendTest {
 
         backend.mirrorControlPlane("DeleteTable", request, "us-east-1", null);
 
-        verify(streamPump).deregister("us-east-1", "Users");
+        verify(streamPump).deregister(ACCOUNT, "us-east-1", "Users");
     }
 
     @Test
@@ -178,7 +188,7 @@ class DynamoDbContainerBackendTest {
         ObjectNode error = MAPPER.createObjectNode();
         error.put("__type", "com.amazon.coral.service#InternalFailure");
         error.put("message", "boom");
-        when(client.call(eq("DeleteTable"), any(), any()))
+        when(client.call(eq(ACCOUNT), eq("DeleteTable"), any(), any()))
                 .thenReturn(new DynamoDbLocalClient.Result(500, error));
 
         ObjectNode request = MAPPER.createObjectNode();
@@ -200,7 +210,7 @@ class DynamoDbContainerBackendTest {
         when(client.call(eq("CreateTable"), any(), any()))
                 .thenReturn(new DynamoDbLocalClient.Result(400, inUse))
                 .thenReturn(new DynamoDbLocalClient.Result(200, MAPPER.createObjectNode()));
-        when(client.call(eq("DeleteTable"), any(), any()))
+        when(client.call(eq(ACCOUNT), eq("DeleteTable"), any(), any()))
                 .thenReturn(new DynamoDbLocalClient.Result(200, MAPPER.createObjectNode()));
 
         ObjectNode request = MAPPER.createObjectNode();
@@ -209,7 +219,7 @@ class DynamoDbContainerBackendTest {
         backend.mirrorControlPlane("CreateTable", request, "us-east-1", table("Users"));
 
         // Dropped the previous generation, then created the new one, so no items survive across it.
-        verify(client).call(eq("DeleteTable"), any(), eq("us-east-1"));
+        verify(client).call(eq(ACCOUNT), eq("DeleteTable"), any(), eq("us-east-1"));
         verify(client, times(2)).call(eq("CreateTable"), any(), eq("us-east-1"));
     }
 
@@ -219,7 +229,7 @@ class DynamoDbContainerBackendTest {
         DynamoDbContainerBackend backend = backendWith("container");
         ObjectNode error = MAPPER.createObjectNode();
         error.put("__type", "com.amazon.coral.service#InternalFailure");
-        when(client.call(eq("DeleteTable"), any(), any()))
+        when(client.call(eq(ACCOUNT), eq("DeleteTable"), any(), any()))
                 .thenReturn(new DynamoDbLocalClient.Result(500, error));
 
         ObjectNode deleteRequest = MAPPER.createObjectNode();
@@ -242,7 +252,7 @@ class DynamoDbContainerBackendTest {
         DynamoDbContainerBackend backend = backendWith("container");
         ObjectNode error = MAPPER.createObjectNode();
         error.put("__type", "com.amazon.coral.service#InternalFailure");
-        when(client.call(eq("DeleteTable"), any(), any()))
+        when(client.call(eq(ACCOUNT), eq("DeleteTable"), any(), any()))
                 .thenReturn(new DynamoDbLocalClient.Result(500, error))
                 .thenReturn(new DynamoDbLocalClient.Result(200, MAPPER.createObjectNode()));
         when(client.call(eq("GetItem"), any(), any()))
@@ -264,7 +274,7 @@ class DynamoDbContainerBackendTest {
         DynamoDbContainerBackend backend = backendWith("container");
         ObjectNode error = MAPPER.createObjectNode();
         error.put("__type", "com.amazon.coral.service#InternalFailure");
-        when(client.call(eq("DeleteTable"), any(), any()))
+        when(client.call(eq(ACCOUNT), eq("DeleteTable"), any(), any()))
                 .thenReturn(new DynamoDbLocalClient.Result(500, error));
 
         ObjectNode deleteRequest = MAPPER.createObjectNode();
@@ -289,7 +299,7 @@ class DynamoDbContainerBackendTest {
         DynamoDbContainerBackend backend = backendWith("container");
         ObjectNode error = MAPPER.createObjectNode();
         error.put("__type", "com.amazon.coral.service#InternalFailure");
-        when(client.call(eq("DeleteTable"), any(), any()))
+        when(client.call(eq(ACCOUNT), eq("DeleteTable"), any(), any()))
                 .thenReturn(new DynamoDbLocalClient.Result(500, error));
 
         ObjectNode deleteRequest = MAPPER.createObjectNode();
@@ -311,7 +321,7 @@ class DynamoDbContainerBackendTest {
         DynamoDbContainerBackend backend = backendWith("container");
         ObjectNode error = MAPPER.createObjectNode();
         error.put("__type", "com.amazon.coral.service#InternalFailure");
-        when(client.call(eq("DeleteTable"), any(), any()))
+        when(client.call(eq(ACCOUNT), eq("DeleteTable"), any(), any()))
                 .thenReturn(new DynamoDbLocalClient.Result(500, error))
                 .thenReturn(new DynamoDbLocalClient.Result(200, MAPPER.createObjectNode()));
         when(client.call(eq("ExecuteStatement"), any(), any()))
@@ -333,7 +343,7 @@ class DynamoDbContainerBackendTest {
         DynamoDbContainerBackend backend = backendWith("container");
         ObjectNode error = MAPPER.createObjectNode();
         error.put("__type", "com.amazon.coral.service#InternalFailure");
-        when(client.call(eq("DeleteTable"), any(), any()))
+        when(client.call(eq(ACCOUNT), eq("DeleteTable"), any(), any()))
                 .thenReturn(new DynamoDbLocalClient.Result(500, error));
         when(client.call(eq("ExecuteStatement"), any(), any()))
                 .thenReturn(new DynamoDbLocalClient.Result(200, MAPPER.createObjectNode()));
@@ -347,6 +357,49 @@ class DynamoDbContainerBackendTest {
         statement.put("Statement", "SELECT * FROM \"Users\"");
         assertEquals(200,
                 backend.forwardIfDataPlane("ExecuteStatement", statement, "eu-west-1").getStatus());
+    }
+
+
+    @Test
+    void anOrphanFromOneAccountNeitherBlocksNorDropsAnotherAccountsTable() {
+        // Account A's drop fails, leaving an orphan.
+        DynamoDbContainerBackend accountA = backendWith("container", "111111111111");
+        ObjectNode error = MAPPER.createObjectNode();
+        error.put("__type", "com.amazon.coral.service#InternalFailure");
+        when(client.call(eq("111111111111"), eq("DeleteTable"), any(), any()))
+                .thenReturn(new DynamoDbLocalClient.Result(500, error));
+
+        ObjectNode deleteRequest = MAPPER.createObjectNode();
+        deleteRequest.put("TableName", "Users");
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> accountA.mirrorControlPlane("DeleteTable", deleteRequest, "us-east-1", null));
+
+        // The retry must never be issued under another account: that would drop a live table.
+        verify(client, never()).call(eq("222222222222"), eq("DeleteTable"), any(), any());
+    }
+
+    @Test
+    void theOrphanRetryIsIssuedUnderTheAccountThatOwnsTheTable() {
+        DynamoDbContainerBackend backend = backendWith("container", "111111111111");
+        ObjectNode error = MAPPER.createObjectNode();
+        error.put("__type", "com.amazon.coral.service#InternalFailure");
+        when(client.call(eq("111111111111"), eq("DeleteTable"), any(), any()))
+                .thenReturn(new DynamoDbLocalClient.Result(500, error))
+                .thenReturn(new DynamoDbLocalClient.Result(200, MAPPER.createObjectNode()));
+        when(client.call(eq("GetItem"), any(), any()))
+                .thenReturn(new DynamoDbLocalClient.Result(200, MAPPER.createObjectNode()));
+
+        ObjectNode deleteRequest = MAPPER.createObjectNode();
+        deleteRequest.put("TableName", "Users");
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> backend.mirrorControlPlane("DeleteTable", deleteRequest, "us-east-1", null));
+
+        ObjectNode read = MAPPER.createObjectNode();
+        read.put("TableName", "Users");
+        assertEquals(200, backend.forwardIfDataPlane("GetItem", read, "us-east-1").getStatus());
+
+        // Both the original drop and the retry carried the owning account.
+        verify(client, times(2)).call(eq("111111111111"), eq("DeleteTable"), any(), eq("us-east-1"));
     }
 
 }
