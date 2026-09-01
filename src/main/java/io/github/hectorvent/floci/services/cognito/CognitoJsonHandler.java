@@ -19,6 +19,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -401,8 +402,9 @@ public class CognitoJsonHandler {
     }
 
     /**
-     * Absent or null yields null so the service can reject it; a value of the wrong JSON type is
-     * a deserialization failure, which AWS reports as SerializationException.
+     * Absent or null yields null so the service can reject it. A value of the wrong JSON type is
+     * a deserialization failure, which AWS reports as SerializationException, and a null element
+     * inside the array is dropped, which is what AWS does with it.
      */
     private List<Map<String, Object>> readObjectList(JsonNode request, String member) {
         JsonNode node = request.get(member);
@@ -412,7 +414,17 @@ public class CognitoJsonHandler {
         if (!node.isArray()) {
             throw new AwsException("SerializationException", "Expected list or null", 400);
         }
-        return objectMapper.convertValue(node, new TypeReference<List<Map<String, Object>>>() {});
+        List<Map<String, Object>> values = new ArrayList<>();
+        for (JsonNode element : node) {
+            if (element.isNull()) {
+                continue;
+            }
+            if (!element.isObject()) {
+                throw new AwsException("SerializationException", "Expected null", 400);
+            }
+            values.add(objectMapper.convertValue(element, new TypeReference<Map<String, Object>>() {}));
+        }
+        return values;
     }
 
     private Response handleDeleteUserPoolDomain(JsonNode request) {

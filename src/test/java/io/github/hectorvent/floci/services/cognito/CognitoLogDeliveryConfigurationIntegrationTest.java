@@ -249,8 +249,44 @@ class CognitoLogDeliveryConfigurationIntegrationTest {
                 "a rejected request must leave the stored configuration untouched");
     }
 
+    /**
+     * A scalar inside the array is a deserialization failure for AWS, not a 500, and a null
+     * element is dropped rather than rejected.
+     */
     @Test
     @Order(10)
+    void malformedArrayElementsMatchAwsHandling() throws Exception {
+        cognitoAction("SetLogDeliveryConfiguration", """
+                {
+                  "UserPoolId": "%s",
+                  "LogConfigurations": [1, 2]
+                }
+                """.formatted(poolId))
+                .then()
+                .statusCode(400)
+                .body("__type", equalTo("SerializationException"));
+
+        cognitoAction("SetLogDeliveryConfiguration", """
+                {
+                  "UserPoolId": "%s",
+                  "LogConfigurations": ["a string"]
+                }
+                """.formatted(poolId))
+                .then()
+                .statusCode(400)
+                .body("__type", equalTo("SerializationException"));
+
+        assertEquals(0, cognitoJson("SetLogDeliveryConfiguration", """
+                {
+                  "UserPoolId": "%s",
+                  "LogConfigurations": [null]
+                }
+                """.formatted(poolId)).path("LogDeliveryConfiguration").path("LogConfigurations").size(),
+                "AWS drops a null element rather than rejecting it");
+    }
+
+    @Test
+    @Order(11)
     void unknownPoolIsRejected() {
         cognitoAction("GetLogDeliveryConfiguration", """
                 {
@@ -263,7 +299,7 @@ class CognitoLogDeliveryConfigurationIntegrationTest {
     }
 
     @Test
-    @Order(11)
+    @Order(12)
     void deletePool() {
         cognitoAction("DeleteUserPool", """
                 {
