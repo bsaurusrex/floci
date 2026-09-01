@@ -256,6 +256,34 @@ class CognitoManagedLoginBrandingIntegrationTest {
                 .statusCode(400)
                 .body("__type", equalTo("SerializationException"));
 
+        cognitoAction("CreateManagedLoginBranding", """
+                {
+                  "UserPoolId": "%s",
+                  "ClientId": "%s",
+                  "UseCognitoProvidedValues": true,
+                  "Assets": [1, 2]
+                }
+                """.formatted(poolId, otherClient))
+                .then()
+                .statusCode(400)
+                .body("__type", equalTo("SerializationException"))
+                .body("message", equalTo("Unexpected value type in payload"));
+
+        cognitoAction("CreateManagedLoginBranding", """
+                {
+                  "UserPoolId": "%s",
+                  "ClientId": "%s",
+                  "UseCognitoProvidedValues": true,
+                  "Assets": [null]
+                }
+                """.formatted(poolId, otherClient))
+                .then()
+                .statusCode(400)
+                .body("__type", equalTo("InvalidParameterException"))
+                .body("message", equalTo(
+                        "1 validation error detected: Value '[null]' at 'assets' failed to satisfy "
+                                + "constraint: Member must satisfy constraint: [Member must not be null]"));
+
         JsonNode coerced = cognitoJson("CreateManagedLoginBranding", """
                 {
                   "UserPoolId": "%s",

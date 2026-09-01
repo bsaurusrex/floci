@@ -20,6 +20,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -583,6 +584,11 @@ public class CognitoJsonHandler {
         return objectMapper.convertValue(node, new TypeReference<LinkedHashMap<String, Object>>() {});
     }
 
+    /**
+     * Elements are checked before conversion so a scalar cannot escape as an IllegalArgumentException.
+     * AWS separates the two failures: a null element is a validation error, a non-object element a
+     * deserialization one. Note this differs from LogConfigurations, where a null element is dropped.
+     */
     private List<Map<String, Object>> readMapList(JsonNode request, String member) {
         JsonNode node = request.get(member);
         if (node == null || node.isNull()) {
@@ -591,7 +597,21 @@ public class CognitoJsonHandler {
         if (!node.isArray()) {
             throw new AwsException("SerializationException", "Unexpected field type", 400);
         }
-        return objectMapper.convertValue(node, new TypeReference<List<Map<String, Object>>>() {});
+        List<Map<String, Object>> values = new ArrayList<>();
+        for (JsonNode element : node) {
+            if (element.isNull()) {
+                throw new AwsException("InvalidParameterException",
+                        "1 validation error detected: Value '" + node + "' at '"
+                                + Character.toLowerCase(member.charAt(0)) + member.substring(1)
+                                + "' failed to satisfy constraint: Member must satisfy constraint: "
+                                + "[Member must not be null]", 400);
+            }
+            if (!element.isObject()) {
+                throw new AwsException("SerializationException", "Unexpected value type in payload", 400);
+            }
+            values.add(objectMapper.convertValue(element, new TypeReference<Map<String, Object>>() {}));
+        }
+        return values;
     }
 
     private Response handleAdminLinkProviderForUser(JsonNode request) {
