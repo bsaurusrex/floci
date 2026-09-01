@@ -176,6 +176,12 @@ store from the credential scope, so anything able to reach that port could read 
 account's tables without passing through Floci. Only Floci is meant to dial it, and when Floci
 itself runs in a container the port is not published at all: the two talk over the Docker network.
 
+That last point carries a caveat worth stating. Any other container sharing that Docker network can
+reach the backing store directly, the same way it can reach the Postgres behind RDS or the Valkey
+behind ElastiCache. Give the backing container a network of its own
+(`FLOCI_SERVICES_DYNAMODB_CONTAINER_DOCKER_NETWORK`) if the network Floci runs on also hosts
+containers that should not have unmediated access.
+
 **What stays in Floci.** The control plane is unchanged, so every parameter Floci already accepts
 keeps round-tripping: table metadata and ARNs, `DescribeTable`, tags, PITR/continuous backups,
 `ExportTableToPointInTime`, Kinesis streaming destinations, and stream fan-out to Lambda event
