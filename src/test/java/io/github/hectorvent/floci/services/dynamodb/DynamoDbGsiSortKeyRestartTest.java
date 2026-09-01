@@ -45,7 +45,7 @@ class DynamoDbGsiSortKeyRestartTest {
     private DynamoDbJsonHandler handlerFor(StorageBackend<String, TableDefinition> store) {
         DynamoDbService service = new DynamoDbService(
                 store, null, new RegionResolver(REGION, "000000000000"), null, null);
-        return new DynamoDbJsonHandler(service, null, null, mapper);
+        return new DynamoDbJsonHandler(service, null, null, mapper, null);
     }
 
     private ObjectNode createTableWithGsiSortKeyRequest() {

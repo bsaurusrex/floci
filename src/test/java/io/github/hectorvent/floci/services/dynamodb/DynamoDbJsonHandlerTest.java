@@ -26,7 +26,7 @@ class DynamoDbJsonHandlerTest {
     void setUp() {
         service = new DynamoDbService(new InMemoryStorage<>());
         mapper = new ObjectMapper();
-        handler = new DynamoDbJsonHandler(service, null, null, mapper);
+        handler = new DynamoDbJsonHandler(service, null, null, mapper, null);
     }
 
     private TableDefinition createUsersTable(String region) {

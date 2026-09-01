@@ -999,8 +999,40 @@ public interface EmulatorConfig {
     }
 
     interface DynamoDbServiceConfig {
+        /** Backend that owns item storage and expression evaluation. */
+        String BACKEND_NATIVE = "native";
+        String BACKEND_CONTAINER = "container";
+
         @WithDefault("true")
         boolean enabled();
+
+        /**
+         * Which engine serves the DynamoDB data plane.
+         *
+         * <p>{@code native} (the default) keeps Floci's in-process engine and is unchanged.
+         * {@code container} delegates item storage, expression evaluation and PartiQL to an
+         * {@code amazon/dynamodb-local} container, while the control plane (table metadata,
+         * ARNs, tags, PITR, exports, Kinesis streaming destinations) stays in Floci. The
+         * container is not a drop-in replacement: it inherits the documented divergences of
+         * downloadable DynamoDB, most notably case-insensitive table names.
+         */
+        @WithDefault(BACKEND_NATIVE)
+        String backend();
+
+        /** Image backing {@code backend=container}. Pinned; {@code latest} moves under you. */
+        @WithDefault("amazon/dynamodb-local:3.3.1")
+        String containerImage();
+
+        /** Host port published for the backing container. 0 allocates dynamically. */
+        @WithDefault("0")
+        int containerHostPort();
+
+        /** Docker network to attach the backing container to. Empty = default bridge. */
+        Optional<String> containerDockerNetwork();
+
+        /** How long to wait for the backing container to accept requests. */
+        @WithDefault("60")
+        int containerStartupTimeoutSeconds();
     }
 
     interface SnsServiceConfig {

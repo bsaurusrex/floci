@@ -18,6 +18,8 @@ import io.github.hectorvent.floci.services.elasticache.container.ElastiCacheCont
 import io.github.hectorvent.floci.services.elasticache.container.ElastiCacheMemcachedContainerManager;
 import io.github.hectorvent.floci.services.elasticache.proxy.ElastiCacheProxyManager;
 import io.github.hectorvent.floci.services.docdb.container.DocDbContainerManager;
+import io.github.hectorvent.floci.services.dynamodb.container.DynamoDbLocalContainerManager;
+import io.github.hectorvent.floci.services.dynamodb.container.DynamoDbStreamPump;
 import io.github.hectorvent.floci.services.lambda.DynamoDbStreamsEventSourcePoller;
 import io.github.hectorvent.floci.services.lambda.KinesisEventSourcePoller;
 import io.github.hectorvent.floci.services.lambda.SqsEventSourcePoller;
@@ -77,6 +79,8 @@ public class EmulatorLifecycle {
     private final MemoryDbContainerManager memoryDbContainerManager;
     private final MemoryDbProxyManager memoryDbProxyManager;
     private final DocDbContainerManager docDbContainerManager;
+    private final DynamoDbLocalContainerManager dynamoDbLocalContainerManager;
+    private final DynamoDbStreamPump dynamoDbStreamPump;
     private final NeptuneContainerManager neptuneContainerManager;
     private final NeptuneProxyManager neptuneProxyManager;
     private final RabbitMqManager rabbitMqManager;
@@ -110,6 +114,8 @@ public class EmulatorLifecycle {
                              MemoryDbContainerManager memoryDbContainerManager,
                              MemoryDbProxyManager memoryDbProxyManager,
                              DocDbContainerManager docDbContainerManager,
+                             DynamoDbLocalContainerManager dynamoDbLocalContainerManager,
+                             DynamoDbStreamPump dynamoDbStreamPump,
                              NeptuneContainerManager neptuneContainerManager,
                              NeptuneProxyManager neptuneProxyManager,
                              RabbitMqManager rabbitMqManager,
@@ -142,6 +148,8 @@ public class EmulatorLifecycle {
         this.memoryDbContainerManager = memoryDbContainerManager;
         this.memoryDbProxyManager = memoryDbProxyManager;
         this.docDbContainerManager = docDbContainerManager;
+        this.dynamoDbLocalContainerManager = dynamoDbLocalContainerManager;
+        this.dynamoDbStreamPump = dynamoDbStreamPump;
         this.neptuneContainerManager = neptuneContainerManager;
         this.neptuneProxyManager = neptuneProxyManager;
         this.rabbitMqManager = rabbitMqManager;
@@ -310,6 +318,8 @@ public class EmulatorLifecycle {
         rdsContainerManager.stopAll();
         memoryDbContainerManager.stopAll();
         docDbContainerManager.stopAll();
+        dynamoDbStreamPump.stopAll();
+        dynamoDbLocalContainerManager.stopAll();
         neptuneContainerManager.stopAll();
         rabbitMqManager.stopAll();
         flinkContainerManager.stopAll();

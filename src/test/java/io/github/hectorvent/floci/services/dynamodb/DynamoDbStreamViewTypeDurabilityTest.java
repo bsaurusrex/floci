@@ -46,7 +46,7 @@ class DynamoDbStreamViewTypeDurabilityTest {
                                            DynamoDbStreamService streams) {
         DynamoDbService service = new DynamoDbService(
                 store, null, new RegionResolver(REGION, "000000000000"), streams, null);
-        return new DynamoDbJsonHandler(service, streams, null, mapper);
+        return new DynamoDbJsonHandler(service, streams, null, mapper, null);
     }
 
     private ObjectNode createTableRequest(String viewType) {

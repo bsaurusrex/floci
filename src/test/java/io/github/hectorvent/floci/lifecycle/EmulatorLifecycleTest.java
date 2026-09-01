@@ -12,6 +12,8 @@ import io.github.hectorvent.floci.services.elasticache.container.ElastiCacheCont
 import io.github.hectorvent.floci.services.elasticache.container.ElastiCacheMemcachedContainerManager;
 import io.github.hectorvent.floci.services.elasticache.proxy.ElastiCacheProxyManager;
 import io.github.hectorvent.floci.services.docdb.container.DocDbContainerManager;
+import io.github.hectorvent.floci.services.dynamodb.container.DynamoDbLocalContainerManager;
+import io.github.hectorvent.floci.services.dynamodb.container.DynamoDbStreamPump;
 import io.github.hectorvent.floci.services.neptune.container.NeptuneContainerManager;
 import io.github.hectorvent.floci.services.neptune.proxy.NeptuneProxyManager;
 import io.github.hectorvent.floci.services.lambda.DynamoDbStreamsEventSourcePoller;
@@ -72,6 +74,8 @@ class EmulatorLifecycleTest {
     @Mock private io.github.hectorvent.floci.services.memorydb.container.MemoryDbContainerManager memoryDbContainerManager;
     @Mock private io.github.hectorvent.floci.services.memorydb.proxy.MemoryDbProxyManager memoryDbProxyManager;
     @Mock private DocDbContainerManager docDbContainerManager;
+    @Mock private DynamoDbLocalContainerManager dynamoDbLocalContainerManager;
+    @Mock private DynamoDbStreamPump dynamoDbStreamPump;
     @Mock private NeptuneContainerManager neptuneContainerManager;
     @Mock private NeptuneProxyManager neptuneProxyManager;
     @Mock private io.github.hectorvent.floci.services.amazonmq.container.RabbitMqManager rabbitMqManager;
@@ -116,7 +120,8 @@ class EmulatorLifecycleTest {
                 elastiCacheContainerManager, elastiCacheMemcachedContainerManager,
                 elastiCacheProxyManager, rdsContainerManager, rdsProxyManager,
                 memoryDbContainerManager, memoryDbProxyManager,
-                docDbContainerManager, neptuneContainerManager, neptuneProxyManager,
+                docDbContainerManager, dynamoDbLocalContainerManager, dynamoDbStreamPump,
+                neptuneContainerManager, neptuneProxyManager,
                 rabbitMqManager, flinkContainerManager, rdsService, elbV2Service, elbClassicService,
                 initializationHooksRunner, sqsPoller, kinesisPoller, dynamodbStreamsPoller,
                 pipesService, ec2MetadataServer, ecrRegistryManager, flociUiManager, initLifecycleState,

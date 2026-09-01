@@ -158,3 +158,53 @@ aws dynamodb list-exports \
 
 The export writes to `s3://<bucket>/<prefix>/AWSDynamoDB/<exportId>/data/` as one or more `.json.gz` files, along with `manifest-summary.json` and `manifest-files.json` — the same layout as real AWS DynamoDB exports.
 ```
+## Container-backed data plane (opt-in)
+
+By default Floci serves DynamoDB entirely in-process. Setting the backend to `container` delegates
+item storage, expression evaluation, PartiQL and transactions to an `amazon/dynamodb-local`
+container, so those semantics come from AWS's own downloadable engine:
+
+```bash
+FLOCI_SERVICES_DYNAMODB_BACKEND=container
+```
+
+The container is started on first use and stopped with the emulator. It needs the Docker socket,
+the same as Lambda, RDS and the other Docker-backed services.
+
+**What stays in Floci.** The control plane is unchanged, so every parameter Floci already accepts
+keeps round-tripping: table metadata and ARNs, `DescribeTable`, tags, PITR/continuous backups,
+`ExportTableToPointInTime`, Kinesis streaming destinations, and stream fan-out to Lambda event
+source mappings and EventBridge Pipes. DynamoDB local models none of those.
+
+**How accounts and regions stay separated.** DynamoDB local keeps a separate store per
+(access key id, region) unless `-sharedDb` is passed, which Floci deliberately omits. Floci sends
+the caller's resolved account id as the access key, so the container's partitioning matches
+Floci's own account and region scoping without renaming tables.
+
+**How streams keep working.** Writes no longer pass through Floci, so before/after images cannot be
+captured inline — and they cannot be rebuilt from the forwarded calls either, because
+`ReturnValues=ALL_OLD` does not exist on `BatchWriteItem` or `TransactWriteItems`. The mirrored
+table therefore always carries `NEW_AND_OLD_IMAGES`, and Floci replays the container's stream into
+its own, applying the caller's configured `StreamViewType` on the way out. Consumers see no
+difference.
+
+### Known divergences in this mode
+
+These come from downloadable DynamoDB itself and apply only when `backend=container`:
+
+| Behaviour | Native backend | Container backend |
+|---|---|---|
+| Table-name case sensitivity | `Authors` and `authors` are distinct, as in AWS | Names are case-insensitive; the second create fails |
+| `TagResource` / `ListTagsOfResource` | Supported | Served by Floci; never reaches the container |
+| Point-in-time recovery | Supported | Served by Floci; DynamoDB local has no PITR |
+| `billingModeSummary` | Populated | Served by Floci |
+| Item collection metrics | Populated | Container returns nulls |
+| `TransactionConflictException` | Raised | Never raised by DynamoDB local |
+
+### Not yet mirrored
+
+Tables created through CloudFormation (`AWS::DynamoDB::Table`) go through
+`DynamoDbService.createTable` rather than the JSON handler, so they are not mirrored into the
+container and their data plane will not work in this mode. The same applies to the legacy
+`states:::dynamodb:*` Step Functions task path and IoT rule actions, which call the service
+directly. Use the native backend for those.

@@ -8,6 +8,7 @@ import io.github.hectorvent.floci.core.common.AwsArnUtils;
 import io.github.hectorvent.floci.core.common.AwsErrorResponse;
 import io.github.hectorvent.floci.core.common.AwsException;
 import io.github.hectorvent.floci.core.common.AwsJsonController;
+import io.github.hectorvent.floci.services.dynamodb.container.DynamoDbContainerBackend;
 import io.github.hectorvent.floci.services.dynamodb.model.*;
 import io.github.hectorvent.floci.services.kinesis.KinesisService;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -31,18 +32,53 @@ public class DynamoDbJsonHandler {
     private final KinesisService kinesisService;
     private final ObjectMapper objectMapper;
     private final DynamoDbPartiQLHandler partiQLHandler;
+    private final DynamoDbContainerBackend containerBackend;
 
     @Inject
     public DynamoDbJsonHandler(DynamoDbService dynamoDbService, DynamoDbStreamService dynamoDbStreamService,
-                               KinesisService kinesisService, ObjectMapper objectMapper) {
+                               KinesisService kinesisService, ObjectMapper objectMapper,
+                               DynamoDbContainerBackend containerBackend) {
         this.dynamoDbService = dynamoDbService;
         this.dynamoDbStreamService = dynamoDbStreamService;
         this.kinesisService = kinesisService;
         this.objectMapper = objectMapper;
         this.partiQLHandler = new DynamoDbPartiQLHandler(dynamoDbService, objectMapper);
+        this.containerBackend = containerBackend;
     }
 
     public Response handle(String action, JsonNode request, String region) throws Exception {
+        // Null in unit tests, which construct this handler directly — same as the stream and
+        // Kinesis collaborators above.
+        if (containerBackend == null || !containerBackend.isEnabled()) {
+            return dispatch(action, request, region);
+        }
+
+        Response forwarded = containerBackend.forwardIfDataPlane(action, request, region);
+        if (forwarded != null) {
+            return forwarded;
+        }
+
+        Response response = dispatch(action, request, region);
+        // Mirror only what Floci accepted: a rejected control-plane call must not reach the
+        // container, or the two views of the table diverge.
+        if (response.getStatus() >= 200 && response.getStatus() < 300) {
+            mirrorControlPlane(action, request, region);
+        }
+        return response;
+    }
+
+    private void mirrorControlPlane(String action, JsonNode request, String region) {
+        // DeleteTable is the one case with nothing left to describe; the backend only needs the
+        // name, which it reads from the request.
+        TableDefinition table = null;
+        String tableName = request.path("TableName").asText(null);
+        if (tableName != null && !"DeleteTable".equals(action)) {
+            table = dynamoDbService.describeTable(DynamoDbTableNames.resolve(tableName), region);
+        }
+        containerBackend.mirrorControlPlane(action, request, region, table);
+    }
+
+    private Response dispatch(String action, JsonNode request, String region) throws Exception {
         return switch (action) {
             case "CreateTable" -> handleCreateTable(request, region);
             case "DeleteTable" -> handleDeleteTable(request, region);
