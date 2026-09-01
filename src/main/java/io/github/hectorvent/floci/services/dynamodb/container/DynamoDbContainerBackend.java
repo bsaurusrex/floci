@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.github.hectorvent.floci.config.EmulatorConfig;
 import io.github.hectorvent.floci.core.common.AwsException;
 import io.github.hectorvent.floci.core.common.RegionResolver;
+import io.github.hectorvent.floci.services.dynamodb.DynamoDbService;
 import io.github.hectorvent.floci.services.dynamodb.DynamoDbStreamService;
 import io.github.hectorvent.floci.services.dynamodb.model.TableDefinition;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -16,7 +17,6 @@ import org.jboss.logging.Logger;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -73,39 +73,37 @@ public class DynamoDbContainerBackend {
     private final DynamoDbStreamPump streamPump;
     private final ObjectMapper objectMapper;
     private final RegionResolver regionResolver;
+    private final DynamoDbService dynamoDbService;
 
     /** Tables already mirrored, so UpdateTable can tell new from known. Keyed by account. */
     private final Map<String, String> mirroredStreamArns = new ConcurrentHashMap<>();
 
     /**
-     * Tables Floci has deleted that the container would not drop. Forwards naming them are refused.
+     * Drops the container refused, recorded so PartiQL can be held off until they go through.
      *
      * <p>Keyed and retried by the account that owns them. The account selects the store inside the
      * container, so retrying under a later caller's account would drop that caller's live table.
+     * Everything other than PartiQL is gated on Floci's own metadata instead, which needs no
+     * bookkeeping to be correct.
      */
-    private final Map<String, OrphanedTable> orphanedTables = new ConcurrentHashMap<>();
+    private final Map<String, OrphanedTable> failedDrops = new ConcurrentHashMap<>();
 
-    /**
-     * A table left in the container after Floci deleted its own copy.
-     *
-     * <p>{@code markerId} identifies who installed it. Overlapping DeleteTable requests share a
-     * key, so an unwind must only withdraw the marker it put there itself and never one a
-     * concurrent request has since confirmed.
-     */
-    private record OrphanedTable(String accountId, String region, String tableName,
-                                 String markerId) { }
+    /** A table left in the container after Floci deleted its own copy. */
+    private record OrphanedTable(String accountId, String region, String tableName) { }
 
     @Inject
     public DynamoDbContainerBackend(EmulatorConfig config,
                                     DynamoDbLocalClient client,
                                     DynamoDbStreamPump streamPump,
                                     ObjectMapper objectMapper,
-                                    RegionResolver regionResolver) {
+                                    RegionResolver regionResolver,
+                                    DynamoDbService dynamoDbService) {
         this.config = config;
         this.client = client;
         this.streamPump = streamPump;
         this.objectMapper = objectMapper;
         this.regionResolver = regionResolver;
+        this.dynamoDbService = dynamoDbService;
     }
 
     public boolean isEnabled() {
@@ -122,7 +120,11 @@ public class DynamoDbContainerBackend {
         if (!DATA_PLANE_ACTIONS.contains(action)) {
             return null;
         }
-        refuseOrphanedTables(action, request, region);
+        if (PARTIQL_ACTIONS.contains(action)) {
+            refuseWhileAnyDropIsOutstanding(region);
+        } else {
+            requireTablesKnownToFloci(request, region);
+        }
         DynamoDbLocalClient.Result result = client.call(action, request, region);
         // Errors are passed through verbatim: the container's codes and messages are the
         // reason for routing here in the first place.
@@ -130,63 +132,49 @@ public class DynamoDbContainerBackend {
     }
 
     /**
-     * Blocks a forward that names a table Floci deleted but the container would not drop.
+     * Refuses a forward Floci's own metadata says should not succeed.
      *
-     * <p>Forwarded reads never consult Floci's metadata, so a table left behind by a failed drop
-     * would keep answering with items from the deleted generation. The drop is retried first, since
-     * the original failure may have been transient. If it still will not go, the request is refused
-     * with what Floci's own metadata implies rather than served from the container.
+     * <p>Forwarded calls would otherwise never consult the control plane, so a table the container
+     * still holds after a failed drop would keep answering reads. Floci's table store is the
+     * authority and its delete is atomic, so asking it is both correct and free of the races that
+     * tracking in-flight deletions separately invites.
      */
-    private void refuseOrphanedTables(String action, JsonNode request, String region) {
-        if (orphanedTables.isEmpty()) {
-            return;
-        }
-        if (PARTIQL_ACTIONS.contains(action)) {
-            refuseAllWhileAnyTableIsOrphaned(region);
-            return;
-        }
+    private void requireTablesKnownToFloci(JsonNode request, String region) {
         for (String tableName : referencedTables(request)) {
-            String orphanKey = key(region, tableName);
-            OrphanedTable orphan = orphanedTables.get(orphanKey);
-            if (orphan == null) {
-                continue;
-            }
-            try {
-                dropAs(orphan);
-                orphanedTables.remove(orphanKey);
-            } catch (RuntimeException e) {
-                throw new AwsException("ResourceNotFoundException",
-                        "Requested resource not found", 400);
-            }
+            // Throws ResourceNotFoundException when Floci does not have the table.
+            dynamoDbService.describeTable(tableName, region);
         }
     }
 
     /**
-     * Refuses PartiQL while any table is orphaned, after retrying every outstanding drop.
+     * Refuses PartiQL while a drop is outstanding, after retrying the outstanding drops.
      *
-     * <p>PartiQL names its table inside the statement text. Floci's own PartiQL parser could be
-     * pointed at it, but that parser is part of the engine this backend exists to bypass: a form it
-     * does not accept but the container does would silently reopen the hole. Refusing every
-     * statement while a drop is outstanding cannot be defeated that way, and the block clears as
-     * soon as the retry succeeds.
+     * <p>PartiQL names its table inside the statement text, so the metadata check above cannot see
+     * it. Floci's own parser could be pointed at the statement, but that parser is part of the
+     * engine this backend exists to bypass: a form it does not accept but the container does would
+     * silently let the statement through. Refusing every statement in the affected account and
+     * region while a drop is outstanding cannot be defeated that way, and clears as soon as a
+     * retry succeeds.
      */
-    private void refuseAllWhileAnyTableIsOrphaned(String region) {
+    private void refuseWhileAnyDropIsOutstanding(String region) {
+        if (failedDrops.isEmpty()) {
+            return;
+        }
         String accountId = regionResolver.getAccountId();
-        for (Map.Entry<String, OrphanedTable> entry : Map.copyOf(orphanedTables).entrySet()) {
-            OrphanedTable orphan = entry.getValue();
-            if (!orphan.accountId().equals(accountId) || !orphan.region().equals(region)) {
+        for (Map.Entry<String, OrphanedTable> entry : Map.copyOf(failedDrops).entrySet()) {
+            OrphanedTable outstanding = entry.getValue();
+            if (!outstanding.accountId().equals(accountId) || !outstanding.region().equals(region)) {
                 continue;
             }
             try {
-                dropAs(orphan);
-                orphanedTables.remove(entry.getKey());
+                dropAs(outstanding);
             } catch (RuntimeException e) {
                 LOG.debugv("Still cannot drop {0}, refusing PartiQL", entry.getKey());
             }
         }
-        boolean stillOrphaned = orphanedTables.values().stream()
+        boolean stillOutstanding = failedDrops.values().stream()
                 .anyMatch(o -> o.accountId().equals(accountId) && o.region().equals(region));
-        if (stillOrphaned) {
+        if (stillOutstanding) {
             throw new AwsException("ResourceNotFoundException",
                     "Requested resource not found", 400);
         }
@@ -218,46 +206,6 @@ public class DynamoDbContainerBackend {
             }
         }
         return tables;
-    }
-
-    /**
-     * Marks a table for refusal before Floci deletes its own copy.
-     *
-     * <p>Mirroring runs after the dispatch that removes Floci's metadata, so a request arriving
-     * between the two would otherwise find no marker and be forwarded to a table that still holds
-     * the old generation. Marking first closes that, at the cost of having to unwind when the
-     * delete Floci was asked for does not actually happen.
-     *
-     * @return true when this call installed the marker, so only that caller may remove it
-     */
-    public String beginDelete(JsonNode request, String region) {
-        String tableName = request.path("TableName").asText(null);
-        if (tableName == null) {
-            return null;
-        }
-        String accountId = regionResolver.getAccountId();
-        String markerId = UUID.randomUUID().toString();
-        OrphanedTable marker = new OrphanedTable(accountId, region, tableName, markerId);
-        return orphanedTables.putIfAbsent(key(accountId, region, tableName), marker) == null
-                ? markerId
-                : null;
-    }
-
-    /**
-     * Removes a marker installed by {@link #beginDelete} when the delete did not go ahead.
-     *
-     * <p>Only ever called with the result of that method, so a marker left by an earlier genuine
-     * drop failure is never cleared by a DeleteTable that Floci itself rejected.
-     */
-    public void abandonDelete(JsonNode request, String region, String markerId) {
-        String tableName = request.path("TableName").asText(null);
-        if (tableName == null || markerId == null) {
-            return;
-        }
-        // Withdraw only this request's own marker. A concurrent DeleteTable may have succeeded and
-        // had its container drop fail in the meantime, and that orphan must survive this unwind.
-        orphanedTables.computeIfPresent(key(regionResolver.getAccountId(), region, tableName),
-                (key, existing) -> markerId.equals(existing.markerId()) ? null : existing);
     }
 
     /**
@@ -313,7 +261,7 @@ public class DynamoDbContainerBackend {
                     + table.getTableName() + ": " + result.errorCode() + " " + result.errorMessage());
         }
 
-        orphanedTables.remove(key(region, table.getTableName()));
+        failedDrops.remove(key(region, table.getTableName()));
         if (streamed) {
             String streamArn = result.body().path("TableDescription").path("LatestStreamArn").asText(null);
             if (streamArn != null) {
@@ -341,8 +289,7 @@ public class DynamoDbContainerBackend {
      * forwarded reads, and would collide with the next table of the same name.
      */
     private void dropFromContainer(String tableName, String region) {
-        dropAs(new OrphanedTable(regionResolver.getAccountId(), region, tableName,
-                UUID.randomUUID().toString()));
+        dropAs(new OrphanedTable(regionResolver.getAccountId(), region, tableName));
     }
 
     /** Drops a table under the account that owns it, not the account making the current request. */
@@ -350,20 +297,15 @@ public class DynamoDbContainerBackend {
         String tableName = orphan.tableName();
         String region = orphan.region();
         String orphanKey = key(orphan.accountId(), region, tableName);
-
-        // Marked before the request, not after it fails. Floci has already dropped its own copy,
-        // and the container delete is a round trip: a read arriving inside that window would
-        // otherwise be forwarded and answered from the generation being removed.
-        orphanedTables.put(orphanKey, orphan);
-
         ObjectNode mirror = objectMapper.createObjectNode();
         mirror.put("TableName", tableName);
         DynamoDbLocalClient.Result result =
                 client.call(orphan.accountId(), "DeleteTable", mirror, region);
         if (result.isSuccess() || "ResourceNotFoundException".equals(result.errorCode())) {
-            orphanedTables.remove(orphanKey, orphan);
+            failedDrops.remove(orphanKey);
             return;
         }
+        failedDrops.put(orphanKey, orphan);
         throw new IllegalStateException("DynamoDB container backend could not drop " + tableName
                 + ", its items would stay readable: " + result.errorCode() + " "
                 + result.errorMessage());

@@ -239,18 +239,17 @@ Both are currently pinned as *passing* by
 rather than "fixed": tightening the native engine to match real AWS would change behaviour those
 tests assert, and is a separate decision from adding a backend.
 
-The table is marked before Floci deletes its own copy, not when the container drop is issued and not
-only when that drop fails, so no read between the two can be answered from the generation being
-removed. The mark is withdrawn if Floci then rejects the delete, for instance because deletion
-protection is on.
+Forwarded requests are gated on Floci's own metadata: if Floci does not have the table, the request
+is refused with `ResourceNotFoundException` rather than answered from a copy the container may still
+hold. The control plane is the authority and its delete is atomic, so there is no window in which a
+deleted table can still be read, and no separate tracking of in-flight deletions to get wrong.
 
-If the container refuses to drop a table Floci has already deleted, the backend fails closed: that
-table is recorded, the drop is retried on the next request that names it, and until it succeeds any
-forwarded read or write for that name is answered with `ResourceNotFoundException` rather than data
-from the deleted generation. PartiQL names its table inside the statement text, so while a drop is
-outstanding in a region every `ExecuteStatement`, `ExecuteTransaction` and `BatchExecuteStatement`
-in that region is refused rather than parsed: a statement form Floci's own parser does not accept
-but the container does would otherwise slip through.
+PartiQL names its table inside the statement text, where that check cannot see it. If a container
+drop fails, every `ExecuteStatement`, `ExecuteTransaction` and `BatchExecuteStatement` in the
+affected account and region is refused until the drop goes through, which is retried on each
+attempt. Pointing Floci's own PartiQL parser at the statement would be the alternative, but that
+parser is part of the engine this backend exists to bypass: a form it does not accept but the
+container does would let the statement past.
 
 ### Not yet mirrored
 

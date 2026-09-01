@@ -59,26 +59,11 @@ public class DynamoDbJsonHandler {
             return forwarded;
         }
 
-        // Marked before the dispatch that removes Floci's metadata, so a read cannot slip in
-        // between the two and be served from the generation about to be dropped.
-        String deleteMarker = "DeleteTable".equals(action)
-                ? containerBackend.beginDelete(request, region)
-                : null;
-
-        Response response;
-        try {
-            response = dispatch(action, request, region);
-        } catch (Exception e) {
-            containerBackend.abandonDelete(request, region, deleteMarker);
-            throw e;
-        }
-
+        Response response = dispatch(action, request, region);
         // Mirror only what Floci accepted: a rejected control-plane call must not reach the
         // container, or the two views of the table diverge.
         if (response.getStatus() >= 200 && response.getStatus() < 300) {
             mirrorControlPlane(action, request, region);
-        } else {
-            containerBackend.abandonDelete(request, region, deleteMarker);
         }
         return response;
     }
