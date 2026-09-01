@@ -131,19 +131,22 @@ public class DynamoDbLocalContainerManager {
     /**
      * Resolves the address Floci dials the backing container on.
      *
-     * <p>In native mode the published port is bound to {@code 127.0.0.1}, so the literal address is
-     * used rather than the shared resolver's {@code localhost}. A host that resolves
-     * {@code localhost} to {@code ::1} first would otherwise dial an address the container never
-     * bound, and startup would time out with the data plane unavailable.
+     * <p>In native mode the published port is bound to {@code 127.0.0.1}, so the literal address
+     * replaces the shared resolver's {@code localhost}. A host that resolves {@code localhost} to
+     * {@code ::1} first would otherwise dial an address the container never bound, and startup
+     * would time out with the data plane unavailable. Only the host is swapped: the port comes
+     * from the resolver, which reads the binding Docker actually made.
      */
     private EndpointInfo resolveEndpoint(ContainerInfo info) {
-        if (containerDetector.isRunningInContainer()) {
-            return info.getEndpoint(DYNAMODB_LOCAL_PORT);
+        EndpointInfo resolved = info.getEndpoint(DYNAMODB_LOCAL_PORT);
+        if (resolved == null) {
+            throw new IllegalStateException(
+                    "DynamoDB local exposed no endpoint on port " + DYNAMODB_LOCAL_PORT);
         }
-        int hostPort = info.publishedHostPort(DYNAMODB_LOCAL_PORT).orElseThrow(
-                () -> new IllegalStateException(
-                        "DynamoDB local was started without a published port on " + DYNAMODB_LOCAL_PORT));
-        return new EndpointInfo(ContainerBuilder.LOOPBACK_HOST_IP, hostPort);
+        if (containerDetector.isRunningInContainer()) {
+            return resolved;
+        }
+        return new EndpointInfo(ContainerBuilder.LOOPBACK_HOST_IP, resolved.port());
     }
 
     private static void waitForReady(EndpointInfo target, int timeoutSeconds) {

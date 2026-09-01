@@ -43,10 +43,12 @@ class DynamoDbLocalContainerManagerEndpointTest {
     void nativeModeDialsTheLiteralLoopbackAddressNotLocalhost() throws Exception {
         // The published port binds 127.0.0.1. A host resolving localhost to ::1 first would
         // otherwise dial an address the container never bound.
+        // Two arguments, exactly as ContainerLifecycleManager.startCreated builds it: the
+        // publishedHostPorts map is empty for anything createAndStart returns, so the port has to
+        // come from the endpoint rather than that map.
         ContainerInfo info = new ContainerInfo(
                 "cid",
-                Map.of(8000, new EndpointInfo("localhost", 49153)),
-                Map.of(8000, 49153));
+                Map.of(8000, new EndpointInfo("localhost", 49153)));
 
         EndpointInfo resolved = resolve(managerWith(false), info);
 
@@ -58,8 +60,7 @@ class DynamoDbLocalContainerManagerEndpointTest {
     void containerModeKeepsTheDockerNetworkAddress() throws Exception {
         ContainerInfo info = new ContainerInfo(
                 "cid",
-                Map.of(8000, new EndpointInfo("172.20.0.3", 8000)),
-                Map.of());
+                Map.of(8000, new EndpointInfo("172.20.0.3", 8000)));
 
         EndpointInfo resolved = resolve(managerWith(true), info);
 
