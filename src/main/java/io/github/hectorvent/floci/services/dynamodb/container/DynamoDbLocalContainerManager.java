@@ -113,7 +113,7 @@ public class DynamoDbLocalContainerManager {
 
         ContainerSpec spec = specBuilder.build();
         ContainerInfo info = lifecycleManager.createAndStart(spec);
-        EndpointInfo resolved = info.getEndpoint(DYNAMODB_LOCAL_PORT);
+        EndpointInfo resolved = resolveEndpoint(info);
         containerId = info.containerId();
 
         String shortId = info.containerId().length() >= 8
@@ -126,6 +126,24 @@ public class DynamoDbLocalContainerManager {
         waitForReady(resolved, ddb.containerStartupTimeoutSeconds());
         LOG.infov("DynamoDB local container ready on {0}", resolved);
         return resolved;
+    }
+
+    /**
+     * Resolves the address Floci dials the backing container on.
+     *
+     * <p>In native mode the published port is bound to {@code 127.0.0.1}, so the literal address is
+     * used rather than the shared resolver's {@code localhost}. A host that resolves
+     * {@code localhost} to {@code ::1} first would otherwise dial an address the container never
+     * bound, and startup would time out with the data plane unavailable.
+     */
+    private EndpointInfo resolveEndpoint(ContainerInfo info) {
+        if (containerDetector.isRunningInContainer()) {
+            return info.getEndpoint(DYNAMODB_LOCAL_PORT);
+        }
+        int hostPort = info.publishedHostPort(DYNAMODB_LOCAL_PORT).orElseThrow(
+                () -> new IllegalStateException(
+                        "DynamoDB local was started without a published port on " + DYNAMODB_LOCAL_PORT));
+        return new EndpointInfo(ContainerBuilder.LOOPBACK_HOST_IP, hostPort);
     }
 
     private static void waitForReady(EndpointInfo target, int timeoutSeconds) {

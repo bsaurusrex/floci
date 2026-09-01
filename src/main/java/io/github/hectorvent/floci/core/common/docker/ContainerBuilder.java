@@ -36,7 +36,7 @@ import java.util.Optional;
 public class ContainerBuilder {
 
     /** Host interface a backing service binds to when only Floci should reach it. */
-    static final String LOOPBACK_HOST_IP = "127.0.0.1";
+    public static final String LOOPBACK_HOST_IP = "127.0.0.1";
 
     private final EmulatorConfig config;
     private final DockerHostResolver dockerHostResolver;
