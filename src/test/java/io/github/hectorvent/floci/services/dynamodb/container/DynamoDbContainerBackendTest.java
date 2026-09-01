@@ -402,4 +402,55 @@ class DynamoDbContainerBackendTest {
         verify(client, times(2)).call(eq("111111111111"), eq("DeleteTable"), any(), eq("us-east-1"));
     }
 
+
+    @Test
+    void aReadArrivingWhileTheDropIsInFlightIsRefusedNotForwarded() {
+        DynamoDbContainerBackend backend = backendWith("container");
+        ObjectNode error = MAPPER.createObjectNode();
+        error.put("__type", "com.amazon.coral.service#InternalFailure");
+        ObjectNode read = MAPPER.createObjectNode();
+        read.put("TableName", "Users");
+
+        // The stub answers the container's DeleteTable by re-entering the backend, standing in for
+        // a read that arrives after Floci dropped its metadata but before the drop comes back.
+        // Marking only on failure would leave orphanedTables empty at this point and forward it.
+        AwsException[] seen = new AwsException[1];
+        boolean[] reentered = {false};
+        when(client.call(eq(ACCOUNT), eq("DeleteTable"), any(), any())).thenAnswer(invocation -> {
+            // Guard set before the nested call: the read retries the drop, which re-enters here.
+            if (!reentered[0]) {
+                reentered[0] = true;
+                seen[0] = org.junit.jupiter.api.Assertions.assertThrows(AwsException.class,
+                        () -> backend.forwardIfDataPlane("GetItem", read, "us-east-1"));
+            }
+            return new DynamoDbLocalClient.Result(500, error);
+        });
+
+        ObjectNode deleteRequest = MAPPER.createObjectNode();
+        deleteRequest.put("TableName", "Users");
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> backend.mirrorControlPlane("DeleteTable", deleteRequest, "us-east-1", null));
+
+        assertEquals("ResourceNotFoundException", seen[0].getErrorCode());
+        verify(client, never()).call(eq("GetItem"), any(), any());
+    }
+
+    @Test
+    void theMarkerIsClearedOnceTheDropSucceeds() {
+        DynamoDbContainerBackend backend = backendWith("container");
+        when(client.call(eq(ACCOUNT), eq("DeleteTable"), any(), any()))
+                .thenReturn(new DynamoDbLocalClient.Result(200, MAPPER.createObjectNode()));
+        when(client.call(eq("GetItem"), any(), any()))
+                .thenReturn(new DynamoDbLocalClient.Result(200, MAPPER.createObjectNode()));
+
+        ObjectNode deleteRequest = MAPPER.createObjectNode();
+        deleteRequest.put("TableName", "Users");
+        backend.mirrorControlPlane("DeleteTable", deleteRequest, "us-east-1", null);
+
+        // The table is genuinely gone, so the container may answer for itself again.
+        ObjectNode read = MAPPER.createObjectNode();
+        read.put("TableName", "Users");
+        assertEquals(200, backend.forwardIfDataPlane("GetItem", read, "us-east-1").getStatus());
+    }
+
 }

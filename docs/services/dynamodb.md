@@ -239,6 +239,9 @@ Both are currently pinned as *passing* by
 rather than "fixed": tightening the native engine to match real AWS would change behaviour those
 tests assert, and is a separate decision from adding a backend.
 
+The table is marked from the moment the drop is issued, not only when it fails, so a read arriving
+while the container delete is still in flight cannot be answered from the generation being removed.
+
 If the container refuses to drop a table Floci has already deleted, the backend fails closed: that
 table is recorded, the drop is retried on the next request that names it, and until it succeeds any
 forwarded read or write for that name is answered with `ResourceNotFoundException` rather than data

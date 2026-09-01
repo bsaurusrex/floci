@@ -300,14 +300,21 @@ public class DynamoDbContainerBackend {
     private void dropAs(OrphanedTable orphan) {
         String tableName = orphan.tableName();
         String region = orphan.region();
+        String orphanKey = key(orphan.accountId(), region, tableName);
+
+        // Marked before the request, not after it fails. Floci has already dropped its own copy,
+        // and the container delete is a round trip: a read arriving inside that window would
+        // otherwise be forwarded and answered from the generation being removed.
+        orphanedTables.put(orphanKey, orphan);
+
         ObjectNode mirror = objectMapper.createObjectNode();
         mirror.put("TableName", tableName);
         DynamoDbLocalClient.Result result =
                 client.call(orphan.accountId(), "DeleteTable", mirror, region);
         if (result.isSuccess() || "ResourceNotFoundException".equals(result.errorCode())) {
+            orphanedTables.remove(orphanKey);
             return;
         }
-        orphanedTables.put(key(orphan.accountId(), region, tableName), orphan);
         throw new IllegalStateException("DynamoDB container backend could not drop " + tableName
                 + ", its items would stay readable: " + result.errorCode() + " "
                 + result.errorMessage());
