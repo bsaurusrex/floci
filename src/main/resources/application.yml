@@ -244,14 +244,13 @@ floci:
       global-bucket-namespace: false
     dynamodb:
       enabled: true
-      # FLOCI_SERVICES_DYNAMODB_BACKEND — native (default) keeps Floci's in-process engine.
+      # FLOCI_SERVICES_DYNAMODB_BACKEND: native (default) keeps Floci's in-process engine.
       # container delegates item storage, expressions and PartiQL to an amazon/dynamodb-local
       # container while the control plane (metadata, ARNs, tags, PITR, exports, Kinesis
       # destinations, stream fan-out) stays in Floci. Not a drop-in: the container inherits
       # downloadable DynamoDB's documented divergences, notably case-insensitive table names.
       backend: native
       container-image: "amazon/dynamodb-local:3.3.1"
-      container-host-port: 0                      # 0 = allocate dynamically
       container-startup-timeout-seconds: 60
       # container-docker-network: floci-net       # Empty = default bridge
     sns:

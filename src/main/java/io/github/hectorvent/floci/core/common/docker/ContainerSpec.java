@@ -31,6 +31,8 @@ import java.util.Map;
  * @param workingDir Working directory inside the container (overrides image WORKDIR)
  * @param user User the container process runs as, formatted "uid[:gid]" (null = image USER)
  * @param groupAdd Supplementary group IDs added to the container process
+ * @param hostIp Host interface published ports bind to (null = Docker's default, all interfaces).
+ *               Use 127.0.0.1 for a backing service only Floci itself should reach.
  */
 public record ContainerSpec(
         String image,
@@ -52,14 +54,15 @@ public record ContainerSpec(
         List<String> dnsServers,
         String workingDir,
         String user,
-        List<String> groupAdd
+        List<String> groupAdd,
+        String hostIp
 ) {
     /**
      * Creates a minimal spec with just the image name.
      * All other fields will be null or empty lists.
      */
     public ContainerSpec(String image) {
-        this(image, null, List.of(), null, null, null, Map.of(), List.of(), null, List.of(), List.of(), List.of(), Map.of(), null, false, null, List.of(), null, null, List.of());
+        this(image, null, List.of(), null, null, null, Map.of(), List.of(), null, List.of(), List.of(), List.of(), Map.of(), null, false, null, List.of(), null, null, List.of(), null);
     }
 
     /**

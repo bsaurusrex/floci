@@ -1023,10 +1023,6 @@ public interface EmulatorConfig {
         @WithDefault("amazon/dynamodb-local:3.3.1")
         String containerImage();
 
-        /** Host port published for the backing container. 0 allocates dynamically. */
-        @WithDefault("0")
-        int containerHostPort();
-
         /** Docker network to attach the backing container to. Empty = default bridge. */
         Optional<String> containerDockerNetwork();
 

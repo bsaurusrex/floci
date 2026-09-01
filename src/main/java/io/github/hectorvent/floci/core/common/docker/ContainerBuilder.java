@@ -35,6 +35,9 @@ import java.util.Optional;
 @ApplicationScoped
 public class ContainerBuilder {
 
+    /** Host interface a backing service binds to when only Floci should reach it. */
+    static final String LOOPBACK_HOST_IP = "127.0.0.1";
+
     private final EmulatorConfig config;
     private final DockerHostResolver dockerHostResolver;
     private final EmbeddedDnsServer embeddedDnsServer;
@@ -125,6 +128,7 @@ public class ContainerBuilder {
         private boolean privileged;
         private String cgroupnsMode;
         private String user;
+        private String hostIp;
         private final List<String> groupAdd = new ArrayList<>();
         private final List<String> dnsServers = new ArrayList<>();
 
@@ -224,6 +228,18 @@ public class ContainerBuilder {
          * Use this when you don't care which host port is used.
          */
         public Builder withDynamicPort(int containerPort) {
+            return withPortBinding(containerPort, 0);
+        }
+
+        /**
+         * Publishes a port on an ephemeral host port bound to loopback only.
+         *
+         * <p>For a backing service that only Floci itself should reach. A plain
+         * {@link #withDynamicPort(int)} lets Docker bind every interface, which puts the container
+         * on the network for any peer that can route to the host.
+         */
+        public Builder withLoopbackDynamicPort(int containerPort) {
+            this.hostIp = LOOPBACK_HOST_IP;
             return withPortBinding(containerPort, 0);
         }
 
@@ -452,7 +468,8 @@ public class ContainerBuilder {
                     List.copyOf(dnsServers),
                     workingDir,
                     user,
-                    List.copyOf(groupAdd)
+                    List.copyOf(groupAdd),
+                    hostIp
             );
         }
     }

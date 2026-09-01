@@ -775,8 +775,14 @@ public class ContainerLifecycleManager {
                     hostPort = portAllocator.allocateAny();
                 }
 
-                ports.bind(ExposedPort.tcp(containerPort), Ports.Binding.bindPort(hostPort));
-                LOG.debugv("Port binding: {0} -> {1}", String.valueOf(containerPort), String.valueOf(hostPort));
+                // A spec with no hostIp keeps Docker's default of publishing on every interface.
+                Ports.Binding binding = spec.hostIp() == null || spec.hostIp().isBlank()
+                        ? Ports.Binding.bindPort(hostPort)
+                        : Ports.Binding.bindIpAndPort(spec.hostIp(), hostPort);
+                ports.bind(ExposedPort.tcp(containerPort), binding);
+                LOG.debugv("Port binding: {0} -> {1}{2}", String.valueOf(containerPort),
+                        String.valueOf(hostPort),
+                        spec.hostIp() == null ? "" : " on " + spec.hostIp());
             }
             hostConfig.withPortBindings(ports);
         }

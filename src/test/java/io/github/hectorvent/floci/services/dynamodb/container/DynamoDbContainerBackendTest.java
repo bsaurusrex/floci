@@ -18,6 +18,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -105,7 +106,7 @@ class DynamoDbContainerBackendTest {
         assertFalse(sent.has("SSESpecification"));
         assertFalse(sent.has("TableClass"));
         assertFalse(sent.has("DeletionProtectionEnabled"));
-        // The caller's request must not be mutated — Floci still answers DescribeTable from it.
+        // The caller's request must not be mutated. Floci still answers DescribeTable from it.
         assertTrue(request.has("Tags"));
     }
 
@@ -169,4 +170,46 @@ class DynamoDbContainerBackendTest {
                 () -> backend.mirrorControlPlane("CreateTable", request, "us-east-1", table("Users")));
         assertTrue(thrown.getMessage().contains("ValidationException"));
     }
+
+    @Test
+    void aFailedDeleteIsFatalSoDeletedItemsCannotStayReadable() {
+        DynamoDbContainerBackend backend = backendWith("container");
+        ObjectNode error = MAPPER.createObjectNode();
+        error.put("__type", "com.amazon.coral.service#InternalFailure");
+        error.put("message", "boom");
+        when(client.call(eq("DeleteTable"), any(), any()))
+                .thenReturn(new DynamoDbLocalClient.Result(500, error));
+
+        ObjectNode request = MAPPER.createObjectNode();
+        request.put("TableName", "Users");
+
+        // Floci has already dropped its own copy, so a surviving container table would keep the
+        // deleted items reachable through forwarded reads. Failing loudly beats that.
+        IllegalStateException thrown = org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalStateException.class,
+                () -> backend.mirrorControlPlane("DeleteTable", request, "us-east-1", null));
+        assertTrue(thrown.getMessage().contains("would stay readable"), thrown.getMessage());
+    }
+
+    @Test
+    void createDropsAStaleContainerTableLeftByAFailedDelete() {
+        DynamoDbContainerBackend backend = backendWith("container");
+        ObjectNode inUse = MAPPER.createObjectNode();
+        inUse.put("__type", "com.amazonaws.dynamodb.v20120810#ResourceInUseException");
+        when(client.call(eq("CreateTable"), any(), any()))
+                .thenReturn(new DynamoDbLocalClient.Result(400, inUse))
+                .thenReturn(new DynamoDbLocalClient.Result(200, MAPPER.createObjectNode()));
+        when(client.call(eq("DeleteTable"), any(), any()))
+                .thenReturn(new DynamoDbLocalClient.Result(200, MAPPER.createObjectNode()));
+
+        ObjectNode request = MAPPER.createObjectNode();
+        request.put("TableName", "Users");
+
+        backend.mirrorControlPlane("CreateTable", request, "us-east-1", table("Users"));
+
+        // Dropped the previous generation, then created the new one, so no items survive across it.
+        verify(client).call(eq("DeleteTable"), any(), eq("us-east-1"));
+        verify(client, times(2)).call(eq("CreateTable"), any(), eq("us-east-1"));
+    }
+
 }

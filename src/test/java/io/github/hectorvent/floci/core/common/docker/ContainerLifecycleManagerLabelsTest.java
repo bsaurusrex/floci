@@ -165,7 +165,7 @@ class ContainerLifecycleManagerLabelsTest {
         return new ContainerSpec(
                 "busybox:stable", null, List.of(), null, null, null, Map.of(), List.of(), null,
                 List.of(), List.of(), List.of(), labels, null, false, null, List.of(), null,
-                null, List.of());
+                null, List.of(), null);
     }
 
     private CreateContainerCmd stubCreateContainer() {

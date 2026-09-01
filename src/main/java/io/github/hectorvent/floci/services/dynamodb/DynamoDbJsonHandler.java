@@ -47,7 +47,7 @@ public class DynamoDbJsonHandler {
     }
 
     public Response handle(String action, JsonNode request, String region) throws Exception {
-        // Null in unit tests, which construct this handler directly — same as the stream and
+        // Null in unit tests, which construct this handler directly, same as the stream and
         // Kinesis collaborators above.
         if (containerBackend == null || !containerBackend.isEnabled()) {
             return dispatch(action, request, region);

@@ -23,17 +23,17 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>The split is deliberate and narrow:
  *
  * <ul>
- *   <li><b>Container</b> — item storage, expression evaluation, PartiQL, transactions. These are
+ *   <li><b>Container</b>: item storage, expression evaluation, PartiQL, transactions. These are
  *       forwarded verbatim so their semantics, error codes and messages come from AWS's own
  *       downloadable engine rather than a reimplementation.</li>
- *   <li><b>Floci</b> — everything else: table metadata, ARNs, tags, PITR, exports, Kinesis
+ *   <li><b>Floci</b>: everything else, namely table metadata, ARNs, tags, PITR, exports, Kinesis
  *       streaming destinations and stream fan-out to Lambda event source mappings and Pipes.
  *       The container never becomes the source of truth for the control plane, so every
  *       CreateTable parameter Floci already accepts keeps round-tripping unchanged.</li>
  * </ul>
  *
  * <p>Table shape is mirrored into the container on CreateTable; the mirror carries only what the
- * container models. Anything it would reject — tags, SSE, table class, deletion protection — is
+ * container models. Anything it would reject (tags, SSE, table class, deletion protection) is
  * stripped, because Floci is still the thing that answers DescribeTable.
  */
 @ApplicationScoped
@@ -136,6 +136,15 @@ public class DynamoDbContainerBackend {
         }
 
         DynamoDbLocalClient.Result result = client.call("CreateTable", mirror, region);
+        if ("ResourceInUseException".equals(result.errorCode()) && !result.isSuccess()) {
+            // A table of this name survived in the container, which means an earlier DeleteTable
+            // mirror did not land. Floci has already committed the new table, so the stale one and
+            // its items must go, otherwise reads would serve data from the previous generation.
+            LOG.warnv("Dropping a stale container table for {0} left by a failed delete",
+                    table.getTableName());
+            dropFromContainer(table.getTableName(), region);
+            result = client.call("CreateTable", mirror, region);
+        }
         if (!result.isSuccess()) {
             throw new IllegalStateException("DynamoDB container backend rejected CreateTable for "
                     + table.getTableName() + ": " + result.errorCode() + " " + result.errorMessage());
@@ -157,14 +166,26 @@ public class DynamoDbContainerBackend {
         }
         streamPump.deregister(region, tableName);
         mirroredStreamArns.remove(key(region, tableName));
+        dropFromContainer(tableName, region);
+    }
 
+    /**
+     * Removes a table from the container, tolerating one that is already gone.
+     *
+     * <p>Anything else is fatal rather than logged. Floci has already dropped its own copy by this
+     * point, so a surviving container table would keep the deleted items reachable through
+     * forwarded reads, and would collide with the next table of the same name.
+     */
+    private void dropFromContainer(String tableName, String region) {
         ObjectNode mirror = objectMapper.createObjectNode();
         mirror.put("TableName", tableName);
         DynamoDbLocalClient.Result result = client.call("DeleteTable", mirror, region);
-        if (!result.isSuccess() && !"ResourceNotFoundException".equals(result.errorCode())) {
-            LOG.warnv("DynamoDB container backend could not drop {0}: {1} {2}",
-                    tableName, result.errorCode(), result.errorMessage());
+        if (result.isSuccess() || "ResourceNotFoundException".equals(result.errorCode())) {
+            return;
         }
+        throw new IllegalStateException("DynamoDB container backend could not drop " + tableName
+                + ", its items would stay readable: " + result.errorCode() + " "
+                + result.errorMessage());
     }
 
     private void mirrorUpdateTable(JsonNode request, String region, TableDefinition table) {

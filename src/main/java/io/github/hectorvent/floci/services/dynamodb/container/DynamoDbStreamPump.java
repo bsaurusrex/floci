@@ -22,8 +22,8 @@ import java.util.concurrent.TimeUnit;
  * before and after images its stream fan-out depends on cannot be captured inline. They cannot be
  * reconstructed from the forwarded calls either: {@code ReturnValues=ALL_OLD} does not exist on
  * BatchWriteItem or TransactWriteItems. The container implements the Streams API natively, so this
- * pump reads it and replays each record through {@code captureEvent}. Everything downstream —
- * Lambda event source mappings, EventBridge Pipes, {@code GetRecords} against Floci — keeps working
+ * pump reads it and replays each record through {@code captureEvent}. Everything downstream,
+ * Lambda event source mappings, EventBridge Pipes and {@code GetRecords} against Floci, keeps working
  * unchanged and still honours the caller's own StreamViewType.
  */
 @ApplicationScoped

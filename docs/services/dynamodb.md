@@ -171,6 +171,11 @@ FLOCI_SERVICES_DYNAMODB_BACKEND=container
 The container is started on first use and stopped with the emulator. It needs the Docker socket,
 the same as Lambda, RDS and the other Docker-backed services.
 
+Its port is published on loopback only. DynamoDB local does not validate signatures and selects its
+store from the credential scope, so anything able to reach that port could read or write any
+account's tables without passing through Floci. Only Floci is meant to dial it, and when Floci
+itself runs in a container the port is not published at all: the two talk over the Docker network.
+
 **What stays in Floci.** The control plane is unchanged, so every parameter Floci already accepts
 keeps round-tripping: table metadata and ARNs, `DescribeTable`, tags, PITR/continuous backups,
 `ExportTableToPointInTime`, Kinesis streaming destinations, and stream fan-out to Lambda event
@@ -182,7 +187,7 @@ the caller's resolved account id as the access key, so the container's partition
 Floci's own account and region scoping without renaming tables.
 
 **How streams keep working.** Writes no longer pass through Floci, so before/after images cannot be
-captured inline — and they cannot be rebuilt from the forwarded calls either, because
+captured inline, and they cannot be rebuilt from the forwarded calls either, because
 `ReturnValues=ALL_OLD` does not exist on `BatchWriteItem` or `TransactWriteItems`. The mirrored
 table therefore always carries `NEW_AND_OLD_IMAGES`, and Floci replays the container's stream into
 its own, applying the caller's configured `StreamViewType` on the way out. Consumers see no
@@ -201,8 +206,8 @@ These come from downloadable DynamoDB itself and apply only when `backend=contai
 | Item collection metrics | Populated | Container returns nulls, so `ReturnItemCollectionMetrics=SIZE` yields none |
 | `TransactionConflictException` | Raised | Never raised by DynamoDB local |
 
-Enum members that AWS validates ahead of the table lookup — `ReturnValues`,
-`ReturnConsumedCapacity`, `ReturnItemCollectionMetrics` — are checked by Floci before the request
+Enum members that AWS validates ahead of the table lookup, namely `ReturnValues`,
+`ReturnConsumedCapacity` and `ReturnItemCollectionMetrics`, are checked by Floci before the request
 is forwarded, because DynamoDB local resolves the table first. Measured against live AWS: an
 invalid `ReturnConsumedCapacity` on a table that does not exist returns `ValidationException`,
 while the same call with a valid enum returns `ResourceNotFoundException`.
@@ -211,7 +216,7 @@ while the same call with a valid enum returns `ResourceNotFoundException`.
 
 Two conformance cases fail in container mode because DynamoDB local rejects something the
 in-process engine allows. Both were checked against the live DynamoDB API, which returns the
-container's error **verbatim** — so the container is right and the native backend is lenient:
+container's error **verbatim**, so the container is right and the native backend is lenient:
 
 - **Unused `ExpressionAttributeNames`.** Supplying `#st` without referencing it in any
   expression is rejected. Live AWS:
@@ -225,7 +230,7 @@ container's error **verbatim** — so the container is right and the native back
 
 Both are currently pinned as *passing* by
 `compatibility-tests/sdk-test-node/tests/dynamodb-conformance.test.ts`, so they are recorded here
-rather than "fixed" — tightening the native engine to match real AWS would change behaviour those
+rather than "fixed": tightening the native engine to match real AWS would change behaviour those
 tests assert, and is a separate decision from adding a backend.
 
 ### Not yet mirrored

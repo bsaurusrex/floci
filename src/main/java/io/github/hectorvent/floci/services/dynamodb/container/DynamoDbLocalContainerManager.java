@@ -101,13 +101,14 @@ public class DynamoDbLocalContainerManager {
                         "dynamodb", "local", regionResolver.getAccountId(),
                         regionResolver.getDefaultRegion()));
 
-        int configuredPort = ddb.containerHostPort();
         if (containerDetector.isRunningInContainer()) {
             specBuilder.withExposedPort(DYNAMODB_LOCAL_PORT);
-        } else if (configuredPort > 0) {
-            specBuilder.withPortBinding(DYNAMODB_LOCAL_PORT, configuredPort);
         } else {
-            specBuilder.withDynamicPort(DYNAMODB_LOCAL_PORT);
+            // Loopback only. The backing container performs no signature validation and picks its
+            // store straight from the credential scope, so anything that can reach the published
+            // port can read or write any account's tables without going through Floci at all.
+            // Nothing but Floci is meant to dial it.
+            specBuilder.withLoopbackDynamicPort(DYNAMODB_LOCAL_PORT);
         }
 
         ContainerSpec spec = specBuilder.build();

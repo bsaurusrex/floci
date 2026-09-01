@@ -26,8 +26,8 @@ import java.time.format.DateTimeFormatter;
  * partitioning inside the container, with no {@code -sharedDb} and no name mangling. The
  * signature itself is a fixed placeholder because nothing validates it.
  *
- * <p>The access key id must be alphanumeric — DynamoDB local rejects anything else with
- * {@code UnrecognizedClientException} — which a 12-digit AWS account id already satisfies.
+ * <p>The access key id must be alphanumeric. DynamoDB local rejects anything else with
+ * {@code UnrecognizedClientException}, and a 12-digit AWS account id already satisfies it.
  */
 @ApplicationScoped
 public class DynamoDbLocalClient {
