@@ -18,6 +18,7 @@ import io.github.hectorvent.floci.core.storage.StorageBackend;
 import io.github.hectorvent.floci.core.storage.StorageFactory;
 import io.github.hectorvent.floci.services.cognito.model.CognitoGroup;
 import io.github.hectorvent.floci.services.cognito.model.CognitoUser;
+import io.github.hectorvent.floci.services.cognito.model.IdentityProvider;
 import io.github.hectorvent.floci.services.cognito.model.ResourceServer;
 import io.github.hectorvent.floci.services.cognito.model.ResourceServerScope;
 import io.github.hectorvent.floci.services.cognito.model.RevokedTokenInfo;
@@ -110,6 +111,7 @@ public class CognitoService implements ResourceProvider {
     private final StorageBackend<String, UserPoolClient> clientStore;
     private final StorageBackend<String, ResourceServer> resourceServerStore;
     private final StorageBackend<String, UserPoolDomain> domainStore;
+    private final StorageBackend<String, IdentityProvider> identityProviderStore;
     private final StorageBackend<String, CognitoUser> userStore;
     private final StorageBackend<String, CognitoGroup> groupStore;
     private final StorageBackend<String, RevokedTokenInfo> revokedTokenStore;
@@ -135,6 +137,8 @@ public class CognitoService implements ResourceProvider {
                         new TypeReference<Map<String, ResourceServer>>() {}),
                 storageFactory.create("cognito", "cognito-domains.json",
                         new TypeReference<Map<String, UserPoolDomain>>() {}),
+                storageFactory.create("cognito", "cognito-identity-providers.json",
+                        new TypeReference<Map<String, IdentityProvider>>() {}),
                 storageFactory.create("cognito", "cognito-users.json",
                         new TypeReference<Map<String, CognitoUser>>() {}),
                 storageFactory.create("cognito", "cognito-groups.json",
@@ -159,7 +163,7 @@ public class CognitoService implements ResourceProvider {
                    RegionResolver regionResolver,
                    LambdaService lambdaService) {
         this(poolStore, clientStore, resourceServerStore, new InMemoryStorage<>(),
-                userStore, groupStore, revokedTokenStore, baseUrl,
+                new InMemoryStorage<>(), userStore, groupStore, revokedTokenStore, baseUrl,
                 regionResolver, lambdaService, null, null);
     }
 
@@ -167,6 +171,7 @@ public class CognitoService implements ResourceProvider {
             StorageBackend<String, UserPoolClient> clientStore,
             StorageBackend<String, ResourceServer> resourceServerStore,
             StorageBackend<String, UserPoolDomain> domainStore,
+            StorageBackend<String, IdentityProvider> identityProviderStore,
             StorageBackend<String, CognitoUser> userStore,
             StorageBackend<String, CognitoGroup> groupStore,
             StorageBackend<String, RevokedTokenInfo> revokedTokenStore,
@@ -178,6 +183,7 @@ public class CognitoService implements ResourceProvider {
         this.clientStore = clientStore;
         this.resourceServerStore = resourceServerStore;
         this.domainStore = domainStore;
+        this.identityProviderStore = identityProviderStore;
         this.userStore = userStore;
         this.groupStore = groupStore;
         this.revokedTokenStore = revokedTokenStore;
@@ -873,6 +879,104 @@ public class CognitoService implements ResourceProvider {
     public void deleteResourceServer(String userPoolId, String identifier) {
         describeResourceServer(userPoolId, identifier);
         resourceServerStore.delete(resourceServerKey(userPoolId, identifier));
+    }
+
+    // ──────────────────────────── Identity Providers ────────────────────────────
+
+    private static final Set<String> PROVIDER_TYPES =
+            Set.of("Facebook", "SAML", "SignInWithApple", "LoginWithAmazon", "OIDC", "Google");
+
+    public IdentityProvider createIdentityProvider(String userPoolId, String providerName, String providerType,
+                                                   Map<String, String> providerDetails,
+                                                   Map<String, String> attributeMapping,
+                                                   List<String> idpIdentifiers) {
+        describeUserPool(userPoolId);
+        if (providerName == null || providerName.isBlank()) {
+            throw new AwsException("InvalidParameterException", "ProviderName is required", 400);
+        }
+        validateProviderType(providerType);
+
+        String key = identityProviderKey(userPoolId, providerName);
+        if (identityProviderStore.get(key).isPresent()) {
+            throw new AwsException("DuplicateProviderException",
+                    providerName + " already exists for tenant " + userPoolId + ".", 400);
+        }
+
+        IdentityProvider provider = new IdentityProvider();
+        provider.setUserPoolId(userPoolId);
+        provider.setProviderName(providerName);
+        provider.setProviderType(providerType);
+        provider.setProviderDetails(copyOrEmpty(providerDetails));
+        // AWS supplies a default mapping only when the member is absent; an explicitly
+        // empty map is stored as given.
+        provider.setAttributeMapping(attributeMapping == null
+                ? new LinkedHashMap<>(Map.of("username", "sub"))
+                : new LinkedHashMap<>(attributeMapping));
+        provider.setIdpIdentifiers(idpIdentifiers == null ? new ArrayList<>() : new ArrayList<>(idpIdentifiers));
+        identityProviderStore.put(key, provider);
+        return provider;
+    }
+
+    public IdentityProvider describeIdentityProvider(String userPoolId, String providerName) {
+        describeUserPool(userPoolId);
+        return identityProviderStore.get(identityProviderKey(userPoolId, providerName))
+                .orElseThrow(() -> new AwsException("ResourceNotFoundException",
+                        "Identity provider " + providerName + " for tenantId " + userPoolId
+                                + " does not exist.", 400));
+    }
+
+    public List<IdentityProvider> listIdentityProviders(String userPoolId) {
+        describeUserPool(userPoolId);
+        String prefix = userPoolId + "::";
+        return identityProviderStore.scan(k -> k.startsWith(prefix));
+    }
+
+    /**
+     * Members the request omits are left as they were: AWS preserves the stored
+     * {@code AttributeMapping} and {@code IdpIdentifiers} rather than clearing them, and an
+     * explicitly empty map or list is what clears them.
+     */
+    public IdentityProvider updateIdentityProvider(String userPoolId, String providerName,
+                                                   Map<String, String> providerDetails,
+                                                   Map<String, String> attributeMapping,
+                                                   List<String> idpIdentifiers) {
+        describeUserPool(userPoolId);
+        String key = identityProviderKey(userPoolId, providerName);
+        IdentityProvider provider = identityProviderStore.get(key)
+                .orElseThrow(() -> new AwsException("ResourceNotFoundException",
+                        "Identity provider " + providerName + " in User Pool " + userPoolId
+                                + " does not exist.", 400));
+
+        if (providerDetails != null) {
+            provider.setProviderDetails(new LinkedHashMap<>(providerDetails));
+        }
+        if (attributeMapping != null) {
+            provider.setAttributeMapping(new LinkedHashMap<>(attributeMapping));
+        }
+        if (idpIdentifiers != null) {
+            provider.setIdpIdentifiers(new ArrayList<>(idpIdentifiers));
+        }
+        provider.setLastModifiedDate(System.currentTimeMillis() / 1000L);
+        identityProviderStore.put(key, provider);
+        return provider;
+    }
+
+    public void deleteIdentityProvider(String userPoolId, String providerName) {
+        describeIdentityProvider(userPoolId, providerName);
+        identityProviderStore.delete(identityProviderKey(userPoolId, providerName));
+    }
+
+    private void validateProviderType(String providerType) {
+        if (providerType == null || !PROVIDER_TYPES.contains(providerType)) {
+            throw new AwsException("InvalidParameterException",
+                    "1 validation error detected: Value '" + providerType + "' at 'providerType' failed to "
+                            + "satisfy constraint: Member must satisfy enum value set: "
+                            + "[Facebook, SAML, SignInWithApple, LoginWithAmazon, OIDC, Google]", 400);
+        }
+    }
+
+    private Map<String, String> copyOrEmpty(Map<String, String> source) {
+        return source == null ? new LinkedHashMap<>() : new LinkedHashMap<>(source);
     }
 
     // ──────────────────────────── User Pool Domains ────────────────────────────
@@ -2890,6 +2994,10 @@ public class CognitoService implements ResourceProvider {
 
     private String resourceServerKey(String userPoolId, String identifier) {
         return userPoolId + "::" + identifier;
+    }
+
+    private String identityProviderKey(String userPoolId, String providerName) {
+        return userPoolId + "::" + providerName;
     }
 
     private String escapeJson(String value) {
