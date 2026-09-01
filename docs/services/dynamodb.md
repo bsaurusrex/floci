@@ -208,3 +208,8 @@ Tables created through CloudFormation (`AWS::DynamoDB::Table`) go through
 container and their data plane will not work in this mode. The same applies to the legacy
 `states:::dynamodb:*` Step Functions task path and IoT rule actions, which call the service
 directly. Use the native backend for those.
+
+The container runs with `-inMemory`, so it starts empty. With a persistent or hybrid storage mode
+Floci reloads its table definitions across a restart while the container does not, leaving the
+data plane returning `ResourceNotFoundException` for tables Floci still lists. Recreate the tables,
+or run this mode with `FLOCI_STORAGE_SERVICES_DYNAMODB_MODE=memory` so both sides forget together.

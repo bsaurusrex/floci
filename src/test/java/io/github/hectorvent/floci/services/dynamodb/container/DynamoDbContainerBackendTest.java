@@ -1,0 +1,172 @@
+package io.github.hectorvent.floci.services.dynamodb.container;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.github.hectorvent.floci.config.EmulatorConfig;
+import io.github.hectorvent.floci.services.dynamodb.model.TableDefinition;
+import jakarta.ws.rs.core.Response;
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+class DynamoDbContainerBackendTest {
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    private final DynamoDbLocalClient client = mock(DynamoDbLocalClient.class);
+    private final DynamoDbStreamPump streamPump = mock(DynamoDbStreamPump.class);
+
+    private DynamoDbContainerBackend backendWith(String configured) {
+        EmulatorConfig config = mock(EmulatorConfig.class);
+        EmulatorConfig.ServicesConfig services = mock(EmulatorConfig.ServicesConfig.class);
+        EmulatorConfig.DynamoDbServiceConfig ddb = mock(EmulatorConfig.DynamoDbServiceConfig.class);
+        lenient().when(config.services()).thenReturn(services);
+        lenient().when(services.dynamodb()).thenReturn(ddb);
+        lenient().when(ddb.backend()).thenReturn(configured);
+        return new DynamoDbContainerBackend(config, client, streamPump, MAPPER);
+    }
+
+    private static TableDefinition table(String name) {
+        TableDefinition definition = new TableDefinition();
+        definition.setTableName(name);
+        return definition;
+    }
+
+    @Test
+    void isEnabledOnlyForTheContainerBackend() {
+        assertTrue(backendWith("container").isEnabled());
+        assertTrue(backendWith("CONTAINER").isEnabled(), "the backend name is case-insensitive");
+        assertFalse(backendWith("native").isEnabled());
+    }
+
+    @Test
+    void controlPlaneActionsAreNotForwarded() {
+        DynamoDbContainerBackend backend = backendWith("container");
+
+        // These are exactly the actions DynamoDB local cannot serve, so Floci must keep them.
+        for (String action : new String[]{
+                "CreateTable", "DescribeTable", "ListTables", "TagResource", "ListTagsOfResource",
+                "UpdateContinuousBackups", "ExportTableToPointInTime",
+                "EnableKinesisStreamingDestination"}) {
+            assertNull(backend.forwardIfDataPlane(action, MAPPER.createObjectNode(), "us-east-1"),
+                    action + " must stay in Floci");
+        }
+        verify(client, never()).call(any(), any(), any());
+    }
+
+    @Test
+    void dataPlaneActionsAreForwardedVerbatimIncludingErrors() {
+        DynamoDbContainerBackend backend = backendWith("container");
+        ObjectNode error = MAPPER.createObjectNode();
+        error.put("__type", "com.amazon.coral.validate#ValidationException");
+        error.put("message", "The provided expression refers to an attribute that does not exist");
+        when(client.call(eq("UpdateItem"), any(), eq("us-east-1")))
+                .thenReturn(new DynamoDbLocalClient.Result(400, error));
+
+        Response response = backend.forwardIfDataPlane("UpdateItem", MAPPER.createObjectNode(), "us-east-1");
+
+        // The container's status and body are the point of routing here: they must not be rewritten.
+        assertEquals(400, response.getStatus());
+        assertEquals(error, response.getEntity());
+    }
+
+    @Test
+    void createTableMirrorDropsMembersDynamoDbLocalRejects() {
+        DynamoDbContainerBackend backend = backendWith("container");
+        when(client.call(eq("CreateTable"), any(), any()))
+                .thenReturn(new DynamoDbLocalClient.Result(200, MAPPER.createObjectNode()));
+
+        ObjectNode request = MAPPER.createObjectNode();
+        request.put("TableName", "Users");
+        request.putArray("Tags").addObject().put("Key", "env").put("Value", "dev");
+        request.putObject("SSESpecification").put("Enabled", true);
+        request.put("TableClass", "STANDARD_INFREQUENT_ACCESS");
+        request.put("DeletionProtectionEnabled", true);
+
+        backend.mirrorControlPlane("CreateTable", request, "us-east-1", table("Users"));
+
+        ArgumentCaptor<JsonNode> mirrored = ArgumentCaptor.forClass(JsonNode.class);
+        verify(client).call(eq("CreateTable"), mirrored.capture(), eq("us-east-1"));
+        JsonNode sent = mirrored.getValue();
+        assertEquals("Users", sent.path("TableName").asText());
+        assertFalse(sent.has("Tags"), "Floci serves tags; DynamoDB local rejects them");
+        assertFalse(sent.has("SSESpecification"));
+        assertFalse(sent.has("TableClass"));
+        assertFalse(sent.has("DeletionProtectionEnabled"));
+        // The caller's request must not be mutated — Floci still answers DescribeTable from it.
+        assertTrue(request.has("Tags"));
+    }
+
+    @Test
+    void mirroredStreamAlwaysCarriesBothImagesAndRegistersThePump() {
+        DynamoDbContainerBackend backend = backendWith("container");
+        ObjectNode created = MAPPER.createObjectNode();
+        created.putObject("TableDescription").put("LatestStreamArn", "arn:stream/1");
+        when(client.call(eq("CreateTable"), any(), any()))
+                .thenReturn(new DynamoDbLocalClient.Result(200, created));
+
+        ObjectNode request = MAPPER.createObjectNode();
+        request.put("TableName", "Users");
+        request.putObject("StreamSpecification")
+                .put("StreamEnabled", true)
+                .put("StreamViewType", "KEYS_ONLY");
+
+        TableDefinition definition = table("Users");
+        backend.mirrorControlPlane("CreateTable", request, "us-east-1", definition);
+
+        ArgumentCaptor<JsonNode> mirrored = ArgumentCaptor.forClass(JsonNode.class);
+        verify(client).call(eq("CreateTable"), mirrored.capture(), eq("us-east-1"));
+        // KEYS_ONLY would starve the pump of the images Floci needs to re-emit; it widens the
+        // mirror and narrows again in DynamoDbStreamService.captureEvent.
+        assertEquals("NEW_AND_OLD_IMAGES",
+                mirrored.getValue().path("StreamSpecification").path("StreamViewType").asText());
+        verify(streamPump).register(definition, "us-east-1", "arn:stream/1");
+        assertTrue(backend.isMirrored("us-east-1", "Users"));
+    }
+
+    @Test
+    void deleteTableDeregistersThePumpEvenWhenTheContainerHasNoSuchTable() {
+        DynamoDbContainerBackend backend = backendWith("container");
+        ObjectNode notFound = MAPPER.createObjectNode();
+        notFound.put("__type", "com.amazonaws.dynamodb.v20120810#ResourceNotFoundException");
+        when(client.call(eq("DeleteTable"), any(), any()))
+                .thenReturn(new DynamoDbLocalClient.Result(400, notFound));
+
+        ObjectNode request = MAPPER.createObjectNode();
+        request.put("TableName", "Users");
+
+        backend.mirrorControlPlane("DeleteTable", request, "us-east-1", null);
+
+        verify(streamPump).deregister("us-east-1", "Users");
+    }
+
+    @Test
+    void aRejectedCreateTableMirrorSurfacesRatherThanLeavingASilentlyBrokenTable() {
+        DynamoDbContainerBackend backend = backendWith("container");
+        ObjectNode error = MAPPER.createObjectNode();
+        error.put("__type", "com.amazon.coral.validate#ValidationException");
+        error.put("message", "Invalid table/index name.");
+        when(client.call(eq("CreateTable"), any(), any()))
+                .thenReturn(new DynamoDbLocalClient.Result(400, error));
+
+        ObjectNode request = MAPPER.createObjectNode();
+        request.put("TableName", "Users");
+
+        IllegalStateException thrown = org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalStateException.class,
+                () -> backend.mirrorControlPlane("CreateTable", request, "us-east-1", table("Users")));
+        assertTrue(thrown.getMessage().contains("ValidationException"));
+    }
+}
