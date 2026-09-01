@@ -464,6 +464,8 @@ public class CognitoService implements ResourceProvider {
         String prefix = id + "::";
         groupStore.scan(k -> k.startsWith(prefix))
                 .forEach(g -> groupStore.delete(groupKey(id, g.getGroupName())));
+        identityProviderStore.scan(k -> k.startsWith(prefix))
+                .forEach(p -> identityProviderStore.delete(identityProviderKey(id, p.getProviderName())));
         poolStore.delete(id);
     }
 
@@ -942,10 +944,10 @@ public class CognitoService implements ResourceProvider {
                                                    List<String> idpIdentifiers) {
         describeUserPool(userPoolId);
         String key = identityProviderKey(userPoolId, providerName);
-        IdentityProvider provider = identityProviderStore.get(key)
+        IdentityProvider provider = copyOf(identityProviderStore.get(key)
                 .orElseThrow(() -> new AwsException("ResourceNotFoundException",
                         "Identity provider " + providerName + " in User Pool " + userPoolId
-                                + " does not exist.", 400));
+                                + " does not exist.", 400)));
 
         if (providerDetails != null) {
             provider.setProviderDetails(new LinkedHashMap<>(providerDetails));
@@ -977,6 +979,19 @@ public class CognitoService implements ResourceProvider {
 
     private Map<String, String> copyOrEmpty(Map<String, String> source) {
         return source == null ? new LinkedHashMap<>() : new LinkedHashMap<>(source);
+    }
+
+    private IdentityProvider copyOf(IdentityProvider source) {
+        IdentityProvider copy = new IdentityProvider();
+        copy.setUserPoolId(source.getUserPoolId());
+        copy.setProviderName(source.getProviderName());
+        copy.setProviderType(source.getProviderType());
+        copy.setProviderDetails(new LinkedHashMap<>(source.getProviderDetails()));
+        copy.setAttributeMapping(new LinkedHashMap<>(source.getAttributeMapping()));
+        copy.setIdpIdentifiers(new ArrayList<>(source.getIdpIdentifiers()));
+        copy.setCreationDate(source.getCreationDate());
+        copy.setLastModifiedDate(source.getLastModifiedDate());
+        return copy;
     }
 
     // ──────────────────────────── User Pool Domains ────────────────────────────

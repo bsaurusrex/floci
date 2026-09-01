@@ -294,8 +294,69 @@ class CognitoIdentityProviderIntegrationTest {
                 """.formatted(poolId)).path("Providers").size());
     }
 
+    /**
+     * A pool recreated on a pinned id must not inherit the dead pool's providers: their
+     * ProviderDetails carry the client_secret.
+     */
     @Test
     @Order(12)
+    void deletingAPoolRemovesItsIdentityProviders() throws Exception {
+        String pinnedId = "us-east-1_idporph1";
+        cognitoAction("CreateUserPool", """
+                {
+                  "PoolName": "IdpOrphanPool",
+                  "UserPoolTags": {"floci:override-id": "%s"}
+                }
+                """.formatted(pinnedId))
+                .then()
+                .statusCode(200);
+
+        cognitoAction("CreateIdentityProvider", """
+                {
+                  "UserPoolId": "%s",
+                  "ProviderName": "OrphanOidc",
+                  "ProviderType": "OIDC",
+                  "ProviderDetails": %s
+                }
+                """.formatted(pinnedId, OIDC_DETAILS))
+                .then()
+                .statusCode(200);
+
+        cognitoAction("DeleteUserPool", """
+                {
+                  "UserPoolId": "%s"
+                }
+                """.formatted(pinnedId))
+                .then()
+                .statusCode(200);
+
+        cognitoAction("CreateUserPool", """
+                {
+                  "PoolName": "IdpOrphanPoolAgain",
+                  "UserPoolTags": {"floci:override-id": "%s"}
+                }
+                """.formatted(pinnedId))
+                .then()
+                .statusCode(200);
+
+        assertEquals(0, cognitoJson("ListIdentityProviders", """
+                {
+                  "UserPoolId": "%s"
+                }
+                """.formatted(pinnedId)).path("Providers").size(),
+                "a recreated pool must not inherit the deleted pool's providers");
+
+        cognitoAction("DeleteUserPool", """
+                {
+                  "UserPoolId": "%s"
+                }
+                """.formatted(pinnedId))
+                .then()
+                .statusCode(200);
+    }
+
+    @Test
+    @Order(13)
     void deletePool() {
         cognitoAction("DeleteUserPool", """
                 {

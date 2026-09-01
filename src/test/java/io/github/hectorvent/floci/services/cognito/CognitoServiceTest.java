@@ -9,6 +9,7 @@ import io.github.hectorvent.floci.core.common.ReservedTags;
 import io.github.hectorvent.floci.core.storage.InMemoryStorage;
 import io.github.hectorvent.floci.services.cognito.model.CognitoGroup;
 import io.github.hectorvent.floci.services.cognito.model.CognitoUser;
+import io.github.hectorvent.floci.services.cognito.model.IdentityProvider;
 import io.github.hectorvent.floci.services.cognito.model.UserPool;
 import io.github.hectorvent.floci.services.cognito.model.UserPoolClient;
 import io.github.hectorvent.floci.services.cognito.verification.CognitoMessageDispatcher;
@@ -2602,6 +2603,29 @@ class CognitoServiceTest {
                 ));
         assertEquals("InvalidParameterException", ex.getErrorCode());
 
+    }
+
+    @Test
+    void updateIdentityProviderDoesNotMutateAlreadyReturnedInstances() {
+        UserPool pool = service.createUserPool(Map.of("PoolName", "IdpCopyPool"), "us-east-1");
+        Map<String, String> details = Map.of(
+                "client_id", "before",
+                "client_secret", "secret",
+                "attributes_request_method", "GET",
+                "oidc_issuer", "https://issuer.example.com",
+                "authorize_scopes", "openid");
+        service.createIdentityProvider(pool.getId(), "CopyOidc", "OIDC", details, null, null);
+
+        IdentityProvider held = service.describeIdentityProvider(pool.getId(), "CopyOidc");
+
+        Map<String, String> updated = new java.util.LinkedHashMap<>(details);
+        updated.put("client_id", "after");
+        service.updateIdentityProvider(pool.getId(), "CopyOidc", updated, null, null);
+
+        assertEquals("before", held.getProviderDetails().get("client_id"),
+                "update must write a copy, not mutate the instance the store already handed out");
+        assertEquals("after",
+                service.describeIdentityProvider(pool.getId(), "CopyOidc").getProviderDetails().get("client_id"));
     }
 
     // Issue #1654: ConfirmSignUp updates verified attribute
