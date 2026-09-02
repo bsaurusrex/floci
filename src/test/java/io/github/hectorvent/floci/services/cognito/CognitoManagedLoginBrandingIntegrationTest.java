@@ -183,11 +183,14 @@ class CognitoManagedLoginBrandingIntegrationTest {
     @Test
     @Order(9)
     void updateLeavesOmittedMembersAlone() throws Exception {
+        // Settings alone is the legal way to touch one member: AWS rejects an update whose
+        // only branding member is UseCognitoProvidedValues=false, because false selects no
+        // source. See validateBrandingSource for the measured matrix.
         cognitoJson("UpdateManagedLoginBranding", """
                 {
                   "UserPoolId": "%s",
                   "ManagedLoginBrandingId": "%s",
-                  "UseCognitoProvidedValues": false
+                  "Settings": {"components": {}}
                 }
                 """.formatted(poolId, brandingId));
 
@@ -327,8 +330,101 @@ class CognitoManagedLoginBrandingIntegrationTest {
                 .body("__type", equalTo("ResourceNotFoundException"));
     }
 
+    /**
+     * A branding request must select exactly one source. Measured against Cognito in
+     * ap-southeast-1: naming both, naming neither, and naming only
+     * {@code UseCognitoProvidedValues=false} are all rejected with the same message,
+     * on create and on update alike.
+     */
     @Test
     @Order(13)
+    void brandingSourceMustBeExactlyOne() throws Exception {
+        String message = "useCognitoProvidedValues or settings should be specified (but not both)";
+
+        String freshClient = cognitoJson("CreateUserPoolClient", """
+                {
+                  "UserPoolId": "%s",
+                  "ClientName": "branding-source-client"
+                }
+                """.formatted(poolId)).path("UserPoolClient").path("ClientId").asText();
+
+        // Own the branding this test updates: the shared brandingId is deleted earlier.
+        String ownBrandingId = cognitoJson("CreateManagedLoginBranding", """
+                {
+                  "UserPoolId": "%s",
+                  "ClientId": "%s",
+                  "UseCognitoProvidedValues": true
+                }
+                """.formatted(poolId, freshClient))
+                .path("ManagedLoginBranding").path("ManagedLoginBrandingId").asText();
+
+        String bareClient = cognitoJson("CreateUserPoolClient", """
+                {
+                  "UserPoolId": "%s",
+                  "ClientName": "branding-source-bare"
+                }
+                """.formatted(poolId)).path("UserPoolClient").path("ClientId").asText();
+
+        cognitoAction("CreateManagedLoginBranding", """
+                {
+                  "UserPoolId": "%s",
+                  "ClientId": "%s",
+                  "UseCognitoProvidedValues": true,
+                  "Settings": {"components": {}}
+                }
+                """.formatted(poolId, bareClient))
+                .then().statusCode(400).body("message", equalTo(message));
+
+        cognitoAction("CreateManagedLoginBranding", """
+                {
+                  "UserPoolId": "%s",
+                  "ClientId": "%s",
+                  "UseCognitoProvidedValues": false
+                }
+                """.formatted(poolId, bareClient))
+                .then().statusCode(400).body("message", equalTo(message));
+
+        cognitoAction("UpdateManagedLoginBranding", """
+                {
+                  "UserPoolId": "%s",
+                  "ManagedLoginBrandingId": "%s",
+                  "UseCognitoProvidedValues": true,
+                  "Settings": {"components": {}}
+                }
+                """.formatted(poolId, ownBrandingId))
+                .then().statusCode(400).body("message", equalTo(message));
+
+        cognitoAction("UpdateManagedLoginBranding", """
+                {
+                  "UserPoolId": "%s",
+                  "ManagedLoginBrandingId": "%s"
+                }
+                """.formatted(poolId, ownBrandingId))
+                .then().statusCode(400).body("message", equalTo(message));
+
+        cognitoAction("UpdateManagedLoginBranding", """
+                {
+                  "UserPoolId": "%s",
+                  "ManagedLoginBrandingId": "%s",
+                  "Assets": []
+                }
+                """.formatted(poolId, ownBrandingId))
+                .then().statusCode(400).body("message", equalTo(message));
+
+        // false plus settings selects settings, so it is accepted.
+        cognitoAction("UpdateManagedLoginBranding", """
+                {
+                  "UserPoolId": "%s",
+                  "ManagedLoginBrandingId": "%s",
+                  "UseCognitoProvidedValues": false,
+                  "Settings": {"components": {}}
+                }
+                """.formatted(poolId, ownBrandingId))
+                .then().statusCode(200);
+    }
+
+    @Test
+    @Order(14)
     void deletePool() {
         cognitoAction("DeleteUserPool", """
                 {

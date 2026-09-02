@@ -509,12 +509,29 @@ public class CognitoJsonHandler {
         return Response.ok(objectMapper.createObjectNode()).build();
     }
 
+    /**
+     * AWS coerces a JSON string in this member instead of rejecting it: {@code "true"} and
+     * {@code "yes"} both store true, while {@code "false"} stores false. Jackson maps every
+     * string except {@code "true"} to false, which would turn {@code "yes"} into a request
+     * selecting no branding source and get it rejected. Measured against Cognito in
+     * ap-southeast-1.
+     */
+    private static Boolean readUseCognitoProvidedValues(JsonNode request) {
+        if (!request.has("UseCognitoProvidedValues")) {
+            return null;
+        }
+        JsonNode node = request.path("UseCognitoProvidedValues");
+        if (node.isTextual()) {
+            return !"false".equalsIgnoreCase(node.asText());
+        }
+        return node.asBoolean();
+    }
+
     private Response handleCreateManagedLoginBranding(JsonNode request) {
         ManagedLoginBranding branding = service.createManagedLoginBranding(
                 request.path("UserPoolId").asText(),
                 request.path("ClientId").asText(),
-                request.has("UseCognitoProvidedValues")
-                        ? request.path("UseCognitoProvidedValues").asBoolean() : null,
+                readUseCognitoProvidedValues(request),
                 readObjectMap(request, "Settings"),
                 readMapList(request, "Assets")
         );
@@ -537,8 +554,7 @@ public class CognitoJsonHandler {
         return brandingResponse(service.updateManagedLoginBranding(
                 request.path("UserPoolId").asText(),
                 request.path("ManagedLoginBrandingId").asText(null),
-                request.has("UseCognitoProvidedValues")
-                        ? request.path("UseCognitoProvidedValues").asBoolean() : null,
+                readUseCognitoProvidedValues(request),
                 readObjectMap(request, "Settings"),
                 readMapList(request, "Assets")));
     }

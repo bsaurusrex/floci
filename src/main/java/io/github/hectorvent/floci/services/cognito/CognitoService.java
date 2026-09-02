@@ -1377,11 +1377,7 @@ public class CognitoService implements ResourceProvider {
                                                            Map<String, Object> settings,
                                                            List<Map<String, Object>> assets) {
         UserPoolClient client = describeUserPoolClient(userPoolId, clientId);
-        // AWS requires one of the two: a create that names neither is rejected.
-        if (useCognitoProvidedValues == null && settings == null) {
-            throw new AwsException("InvalidParameterException",
-                    "useCognitoProvidedValues or settings should be specified (but not both)", 400);
-        }
+        validateBrandingSource(useCognitoProvidedValues, settings);
         if (client.getManagedLoginBranding() != null) {
             throw new AwsException("ManagedLoginBrandingExistsException",
                     "A ManagedLoginBranding already exists for client " + clientId, 400);
@@ -1428,6 +1424,7 @@ public class CognitoService implements ResourceProvider {
                                                            Map<String, Object> settings,
                                                            List<Map<String, Object>> assets) {
         describeManagedLoginBranding(userPoolId, brandingId);
+        validateBrandingSource(useCognitoProvidedValues, settings);
         UserPoolClient client = findBrandingClient(userPoolId, brandingId);
         ManagedLoginBranding branding = client.getManagedLoginBranding();
 
@@ -1443,6 +1440,30 @@ public class CognitoService implements ResourceProvider {
         branding.setLastModifiedDate(System.currentTimeMillis() / 1000L);
         clientStore.put(client.getClientId(), client);
         return branding;
+    }
+
+    /**
+     * A branding request must select exactly one source of branding, and the same rule
+     * applies to create and to update. Measured against Cognito in ap-southeast-1:
+     *
+     * <pre>
+     * useCognitoProvidedValues  settings   result
+     * absent                    absent     InvalidParameterException
+     * true                      absent     accepted
+     * false                     absent     InvalidParameterException
+     * absent                    present    accepted
+     * true                      present    InvalidParameterException
+     * false                     present    accepted
+     * </pre>
+     *
+     * <p>So the member being present is not what counts: {@code false} selects no source,
+     * which is why it is rejected unless settings supply one.
+     */
+    private void validateBrandingSource(Boolean useCognitoProvidedValues, Map<String, Object> settings) {
+        if (Boolean.TRUE.equals(useCognitoProvidedValues) == (settings != null)) {
+            throw new AwsException("InvalidParameterException",
+                    "useCognitoProvidedValues or settings should be specified (but not both)", 400);
+        }
     }
 
     public void deleteManagedLoginBranding(String userPoolId, String brandingId) {
