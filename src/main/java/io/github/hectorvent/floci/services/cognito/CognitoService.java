@@ -464,9 +464,13 @@ public class CognitoService implements ResourceProvider {
         String prefix = id + "::";
         groupStore.scan(k -> k.startsWith(prefix))
                 .forEach(g -> groupStore.delete(groupKey(id, g.getGroupName())));
-        identityProviderStore.scan(k -> k.startsWith(prefix))
-                .forEach(p -> identityProviderStore.delete(identityProviderKey(id, p.getProviderName())));
-        poolStore.delete(id);
+        // Same lock as the provider mutations: a create or update that interleaves with
+        // this cascade would otherwise reinstate a provider for a pool that is going away.
+        synchronized (identityProviderLock) {
+            identityProviderStore.scan(k -> k.startsWith(prefix))
+                    .forEach(p -> identityProviderStore.delete(identityProviderKey(id, p.getProviderName())));
+            poolStore.delete(id);
+        }
     }
 
     // ──────────────────────────── User Pool Clients ────────────────────────────
