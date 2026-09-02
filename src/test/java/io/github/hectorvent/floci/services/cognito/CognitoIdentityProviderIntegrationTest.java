@@ -3,6 +3,11 @@ package io.github.hectorvent.floci.services.cognito;
 import com.fasterxml.jackson.databind.JsonNode;
 import io.github.hectorvent.floci.testing.RestAssuredJsonUtils;
 import io.quarkus.test.junit.QuarkusTest;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
@@ -355,8 +360,96 @@ class CognitoIdentityProviderIntegrationTest {
                 .statusCode(200);
     }
 
+    /**
+     * Two overlapping updates that touch different optional members must both survive.
+     *
+     * <p>Update is a read-modify-write: it copies the stored provider, applies only the
+     * members the request supplied and writes the whole record back. Without a lock both
+     * callers copy the same base, so the later write restores the other's omitted members
+     * to their stale values and silently drops an update.
+     *
+     * <p>Measured against live Cognito in ap-southeast-1: an update that omits
+     * {@code AttributeMapping} and {@code IdpIdentifiers} leaves both intact, so the
+     * service merges, and it does so atomically. Reverting the lock in
+     * {@code CognitoService.updateIdentityProvider} makes this test fail.
+     */
     @Test
     @Order(13)
+    void concurrentUpdatesOfDifferentMembersBothSurvive() throws Exception {
+        String racePool = cognitoJson("CreateUserPool", """
+                {
+                  "PoolName": "idp-concurrency-pool"
+                }
+                """).path("UserPool").path("Id").asText();
+
+        cognitoAction("CreateIdentityProvider", """
+                {
+                  "UserPoolId": "%s",
+                  "ProviderName": "RaceOidc",
+                  "ProviderType": "OIDC",
+                  "ProviderDetails": %s,
+                  "AttributeMapping": {"username": "sub"}
+                }
+                """.formatted(racePool, OIDC_DETAILS))
+                .then()
+                .statusCode(200);
+
+        ExecutorService threads = Executors.newFixedThreadPool(2);
+        try {
+            for (int round = 0; round < 25; round++) {
+                String attribute = "email" + round;
+                String identifier = "ident" + round;
+                CyclicBarrier start = new CyclicBarrier(2);
+
+                Future<?> mappingWriter = threads.submit(() -> {
+                    start.await();
+                    return cognitoAction("UpdateIdentityProvider", """
+                            {
+                              "UserPoolId": "%s",
+                              "ProviderName": "RaceOidc",
+                              "AttributeMapping": {"username": "sub", "%s": "%s"}
+                            }
+                            """.formatted(racePool, attribute, attribute));
+                });
+                Future<?> identifierWriter = threads.submit(() -> {
+                    start.await();
+                    return cognitoAction("UpdateIdentityProvider", """
+                            {
+                              "UserPoolId": "%s",
+                              "ProviderName": "RaceOidc",
+                              "IdpIdentifiers": ["%s"]
+                            }
+                            """.formatted(racePool, identifier));
+                });
+                mappingWriter.get(30, TimeUnit.SECONDS);
+                identifierWriter.get(30, TimeUnit.SECONDS);
+
+                JsonNode described = cognitoJson("DescribeIdentityProvider", """
+                        {
+                          "UserPoolId": "%s",
+                          "ProviderName": "RaceOidc"
+                        }
+                        """.formatted(racePool)).path("IdentityProvider");
+
+                assertTrue(described.path("AttributeMapping").has(attribute),
+                        "round " + round + ": the concurrent IdpIdentifiers update discarded "
+                                + "the AttributeMapping write");
+                assertEquals(identifier, described.path("IdpIdentifiers").path(0).asText(),
+                        "round " + round + ": the concurrent AttributeMapping update discarded "
+                                + "the IdpIdentifiers write");
+            }
+        } finally {
+            threads.shutdownNow();
+            cognitoAction("DeleteUserPool", """
+                    {
+                      "UserPoolId": "%s"
+                    }
+                    """.formatted(racePool));
+        }
+    }
+
+    @Test
+    @Order(14)
     void deletePool() {
         cognitoAction("DeleteUserPool", """
                 {

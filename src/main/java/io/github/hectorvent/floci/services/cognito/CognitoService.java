@@ -899,24 +899,27 @@ public class CognitoService implements ResourceProvider {
         validateProviderType(providerType);
 
         String key = identityProviderKey(userPoolId, providerName);
-        if (identityProviderStore.get(key).isPresent()) {
-            throw new AwsException("DuplicateProviderException",
-                    providerName + " already exists for tenant " + userPoolId + ".", 400);
-        }
+        synchronized (identityProviderLock) {
+            if (identityProviderStore.get(key).isPresent()) {
+                throw new AwsException("DuplicateProviderException",
+                        providerName + " already exists for tenant " + userPoolId + ".", 400);
+            }
 
-        IdentityProvider provider = new IdentityProvider();
-        provider.setUserPoolId(userPoolId);
-        provider.setProviderName(providerName);
-        provider.setProviderType(providerType);
-        provider.setProviderDetails(copyOrEmpty(providerDetails));
-        // AWS supplies a default mapping only when the member is absent; an explicitly
-        // empty map is stored as given.
-        provider.setAttributeMapping(attributeMapping == null
-                ? new LinkedHashMap<>(Map.of("username", "sub"))
-                : new LinkedHashMap<>(attributeMapping));
-        provider.setIdpIdentifiers(idpIdentifiers == null ? new ArrayList<>() : new ArrayList<>(idpIdentifiers));
-        identityProviderStore.put(key, provider);
-        return provider;
+            IdentityProvider provider = new IdentityProvider();
+            provider.setUserPoolId(userPoolId);
+            provider.setProviderName(providerName);
+            provider.setProviderType(providerType);
+            provider.setProviderDetails(copyOrEmpty(providerDetails));
+            // AWS supplies a default mapping only when the member is absent; an explicitly
+            // empty map is stored as given.
+            provider.setAttributeMapping(attributeMapping == null
+                    ? new LinkedHashMap<>(Map.of("username", "sub"))
+                    : new LinkedHashMap<>(attributeMapping));
+            provider.setIdpIdentifiers(idpIdentifiers == null
+                    ? new ArrayList<>() : new ArrayList<>(idpIdentifiers));
+            identityProviderStore.put(key, provider);
+            return provider;
+        }
     }
 
     public IdentityProvider describeIdentityProvider(String userPoolId, String providerName) {
@@ -944,28 +947,32 @@ public class CognitoService implements ResourceProvider {
                                                    List<String> idpIdentifiers) {
         describeUserPool(userPoolId);
         String key = identityProviderKey(userPoolId, providerName);
-        IdentityProvider provider = copyOf(identityProviderStore.get(key)
-                .orElseThrow(() -> new AwsException("ResourceNotFoundException",
-                        "Identity provider " + providerName + " in User Pool " + userPoolId
-                                + " does not exist.", 400)));
+        synchronized (identityProviderLock) {
+            IdentityProvider provider = copyOf(identityProviderStore.get(key)
+                    .orElseThrow(() -> new AwsException("ResourceNotFoundException",
+                            "Identity provider " + providerName + " in User Pool " + userPoolId
+                                    + " does not exist.", 400)));
 
-        if (providerDetails != null) {
-            provider.setProviderDetails(new LinkedHashMap<>(providerDetails));
+            if (providerDetails != null) {
+                provider.setProviderDetails(new LinkedHashMap<>(providerDetails));
+            }
+            if (attributeMapping != null) {
+                provider.setAttributeMapping(new LinkedHashMap<>(attributeMapping));
+            }
+            if (idpIdentifiers != null) {
+                provider.setIdpIdentifiers(new ArrayList<>(idpIdentifiers));
+            }
+            provider.setLastModifiedDate(System.currentTimeMillis() / 1000L);
+            identityProviderStore.put(key, provider);
+            return provider;
         }
-        if (attributeMapping != null) {
-            provider.setAttributeMapping(new LinkedHashMap<>(attributeMapping));
-        }
-        if (idpIdentifiers != null) {
-            provider.setIdpIdentifiers(new ArrayList<>(idpIdentifiers));
-        }
-        provider.setLastModifiedDate(System.currentTimeMillis() / 1000L);
-        identityProviderStore.put(key, provider);
-        return provider;
     }
 
     public void deleteIdentityProvider(String userPoolId, String providerName) {
-        describeIdentityProvider(userPoolId, providerName);
-        identityProviderStore.delete(identityProviderKey(userPoolId, providerName));
+        synchronized (identityProviderLock) {
+            describeIdentityProvider(userPoolId, providerName);
+            identityProviderStore.delete(identityProviderKey(userPoolId, providerName));
+        }
     }
 
     private void validateProviderType(String providerType) {
@@ -1370,6 +1377,12 @@ public class CognitoService implements ResourceProvider {
 
     // Serializes adminLinkProviderForUser's check-then-write.
     private final Object identityLinkLock = new Object();
+
+    // Identity provider mutations are read-modify-write (update) and check-then-act
+    // (create, delete). AWS applies each of those atomically, so two overlapping
+    // updates that touch different optional members both survive there. Guarding
+    // every mutating path with one lock reproduces that.
+    private final Object identityProviderLock = new Object();
 
     public void adminLinkProviderForUser(String userPoolId, String destinationUsername,
             String sourceProviderName, String sourceUserId) {
