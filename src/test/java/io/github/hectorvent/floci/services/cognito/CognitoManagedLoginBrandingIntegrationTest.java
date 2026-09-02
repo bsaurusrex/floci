@@ -474,6 +474,149 @@ class CognitoManagedLoginBrandingIntegrationTest {
 
     @Test
     @Order(15)
+    void createRejectsMoreThanFortyAssets() {
+        cognitoAction("CreateManagedLoginBranding", """
+                {
+                  "UserPoolId": "%s",
+                  "ClientId": "%s",
+                  "Settings": {"components": {}},
+                  "Assets": %s
+                }
+                """.formatted(poolId, clientId, assetArray(41)))
+                .then()
+                .statusCode(400)
+                .body("__type", equalTo("InvalidParameterException"))
+                .body("message", equalTo(
+                        "1 validation error detected: Value '" + renderedAssets(41)
+                                + "' at 'assets' failed to satisfy constraint: "
+                                + "Member must have length less than or equal to 40"));
+    }
+
+    @Test
+    @Order(16)
+    void fortyAssetsAreAccepted() throws Exception {
+        String extraClient = cognitoJson("CreateUserPoolClient", """
+                {
+                  "UserPoolId": "%s",
+                  "ClientName": "forty-asset-client"
+                }
+                """.formatted(poolId)).path("UserPoolClient").path("ClientId").asText();
+
+        cognitoAction("CreateManagedLoginBranding", """
+                {
+                  "UserPoolId": "%s",
+                  "ClientId": "%s",
+                  "Settings": {"components": {}},
+                  "Assets": %s
+                }
+                """.formatted(poolId, extraClient, assetArray(40)))
+                .then()
+                .statusCode(200)
+                .body("ManagedLoginBranding.Assets.size()", equalTo(40));
+    }
+
+    @Test
+    @Order(17)
+    void updateRejectsMoreThanFortyAssets() {
+        cognitoAction("UpdateManagedLoginBranding", """
+                {
+                  "UserPoolId": "%s",
+                  "ManagedLoginBrandingId": "%s",
+                  "Settings": {"components": {}},
+                  "Assets": %s
+                }
+                """.formatted(poolId, brandingId, assetArray(41)))
+                .then()
+                .statusCode(400)
+                .body("__type", equalTo("InvalidParameterException"))
+                .body("message", equalTo(
+                        "1 validation error detected: Value '" + renderedAssets(41)
+                                + "' at 'assets' failed to satisfy constraint: "
+                                + "Member must have length less than or equal to 40"));
+    }
+
+    @Test
+    @Order(18)
+    void theAssetViolationIsReportedAheadOfTheBrandingIdViolation() {
+        cognitoAction("UpdateManagedLoginBranding", """
+                {
+                  "UserPoolId": "%s",
+                  "ManagedLoginBrandingId": "not-a-uuid",
+                  "Settings": {"components": {}},
+                  "Assets": %s
+                }
+                """.formatted(poolId, assetArray(41)))
+                .then()
+                .statusCode(400)
+                .body("__type", equalTo("InvalidParameterException"))
+                .body("message", equalTo(
+                        "2 validation errors detected: Value '" + renderedAssets(41)
+                                + "' at 'assets' failed to satisfy constraint: "
+                                + "Member must have length less than or equal to 40; "
+                                + "Value 'not-a-uuid' at 'managedLoginBrandingId' failed to satisfy "
+                                + "constraint: Member must satisfy regular expression pattern: "
+                                + BRANDING_ID_PATTERN));
+    }
+
+    @Test
+    @Order(19)
+    void shapeViolationsAreReportedBeforeTheMissingPool() {
+        cognitoAction("DescribeManagedLoginBranding", """
+                {
+                  "UserPoolId": "us-east-1_nosuchpool",
+                  "ManagedLoginBrandingId": "not-a-uuid"
+                }
+                """)
+                .then()
+                .statusCode(400)
+                .body("__type", equalTo("InvalidParameterException"))
+                .body("message", equalTo(
+                        "1 validation error detected: Value 'not-a-uuid' at 'managedLoginBrandingId' "
+                                + "failed to satisfy constraint: Member must satisfy regular expression "
+                                + "pattern: " + BRANDING_ID_PATTERN));
+    }
+
+    @Test
+    @Order(20)
+    void aRejectedUpdateLeavesTheAssetsAlone() throws Exception {
+        String client = cognitoJson("CreateUserPoolClient", """
+                {
+                  "UserPoolId": "%s",
+                  "ClientName": "rejected-update-client"
+                }
+                """.formatted(poolId)).path("UserPoolClient").path("ClientId").asText();
+        String branding = cognitoJson("CreateManagedLoginBranding", """
+                {
+                  "UserPoolId": "%s",
+                  "ClientId": "%s",
+                  "Settings": {"components": {}},
+                  "Assets": %s
+                }
+                """.formatted(poolId, client, assetArray(1)))
+                .path("ManagedLoginBranding").path("ManagedLoginBrandingId").asText();
+
+        cognitoAction("UpdateManagedLoginBranding", """
+                {
+                  "UserPoolId": "%s",
+                  "ManagedLoginBrandingId": "%s",
+                  "Settings": {"components": {}},
+                  "Assets": %s
+                }
+                """.formatted(poolId, branding, assetArray(41)))
+                .then()
+                .statusCode(400);
+
+        JsonNode readBack = cognitoJson("DescribeManagedLoginBranding", """
+                {
+                  "UserPoolId": "%s",
+                  "ManagedLoginBrandingId": "%s"
+                }
+                """.formatted(poolId, branding)).path("ManagedLoginBranding");
+        assertEquals(1, readBack.path("Assets").size(), "a rejected update must not replace the assets");
+    }
+
+    @Test
+    @Order(21)
     void deletePool() {
         cognitoAction("DeleteUserPool", """
                 {
@@ -482,5 +625,37 @@ class CognitoManagedLoginBrandingIntegrationTest {
                 """.formatted(poolId))
                 .then()
                 .statusCode(200);
+    }
+
+    private static final String BRANDING_ID_PATTERN =
+            "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[4][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$";
+
+    /** A one-byte payload, so the rendered buffer length stays easy to read. */
+    private static final String ASSET_BYTES = "AA==";
+
+    private static String assetArray(int count) {
+        StringBuilder json = new StringBuilder("[");
+        for (int i = 0; i < count; i++) {
+            if (i > 0) {
+                json.append(", ");
+            }
+            json.append("{\"Category\": \"PAGE_HEADER_LOGO\", \"ColorMode\": \"LIGHT\", ")
+                    .append("\"Extension\": \"PNG\", \"Bytes\": \"").append(ASSET_BYTES)
+                    .append("\", \"ResourceId\": \"asset-").append(i).append("\"}");
+        }
+        return json.append("]").toString();
+    }
+
+    private static String renderedAssets(int count) {
+        StringBuilder rendered = new StringBuilder("[");
+        for (int i = 0; i < count; i++) {
+            if (i > 0) {
+                rendered.append(", ");
+            }
+            rendered.append("AssetType(category=PAGE_HEADER_LOGO, colorMode=LIGHT, extension=PNG, ")
+                    .append("bytes=java.nio.HeapByteBuffer[pos=0 lim=1 cap=1], resourceId=asset-")
+                    .append(i).append(")");
+        }
+        return rendered.append("]").toString();
     }
 }
