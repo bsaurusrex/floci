@@ -510,21 +510,33 @@ public class CognitoJsonHandler {
     }
 
     /**
-     * AWS coerces a JSON string in this member instead of rejecting it: {@code "true"} and
-     * {@code "yes"} both store true, while {@code "false"} stores false. Jackson maps every
-     * string except {@code "true"} to false, which would turn {@code "yes"} into a request
-     * selecting no branding source and get it rejected. Measured against Cognito in
-     * ap-southeast-1.
+     * AWS coerces a JSON string in this member instead of rejecting it, and rejects every
+     * other non-boolean type. Measured against Cognito in ap-southeast-1:
+     *
+     * <pre>
+     * absent          accepted, stored false
+     * true / false    accepted as given
+     * "true", "yes"   accepted, stored true
+     * "false"         accepted, stored false
+     * 1, null, {}, [] SerializationException
+     * </pre>
+     *
+     * <p>Jackson would map all of those last four to false through {@code asBoolean()},
+     * which is how a malformed flag used to be accepted alongside valid settings and
+     * persisted as unintended branding state.
      */
     private static Boolean readUseCognitoProvidedValues(JsonNode request) {
         if (!request.has("UseCognitoProvidedValues")) {
             return null;
         }
         JsonNode node = request.path("UseCognitoProvidedValues");
+        if (node.isBoolean()) {
+            return node.booleanValue();
+        }
         if (node.isTextual()) {
             return !"false".equalsIgnoreCase(node.asText());
         }
-        return node.asBoolean();
+        throw new AwsException("SerializationException", null, 400);
     }
 
     private Response handleCreateManagedLoginBranding(JsonNode request) {

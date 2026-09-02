@@ -423,8 +423,57 @@ class CognitoManagedLoginBrandingIntegrationTest {
                 .then().statusCode(200);
     }
 
+    /**
+     * Every non-boolean, non-string type in this member is a SerializationException at
+     * the service, including alongside otherwise valid Settings. Measured in
+     * ap-southeast-1: 1, JSON null, {} and [] are all rejected, while omitting the
+     * member entirely is accepted and stores false.
+     */
     @Test
     @Order(14)
+    void malformedUseCognitoProvidedValuesTypesAreRejected() throws Exception {
+        for (String malformed : new String[] {"1", "null", "{}", "[]"}) {
+            String client = cognitoJson("CreateUserPoolClient", """
+                    {
+                      "UserPoolId": "%s",
+                      "ClientName": "malformed-flag-%s"
+                    }
+                    """.formatted(poolId, Integer.toHexString(malformed.hashCode())))
+                    .path("UserPoolClient").path("ClientId").asText();
+
+            cognitoAction("CreateManagedLoginBranding", """
+                    {
+                      "UserPoolId": "%s",
+                      "ClientId": "%s",
+                      "UseCognitoProvidedValues": %s,
+                      "Settings": {"components": {}}
+                    }
+                    """.formatted(poolId, client, malformed))
+                    .then()
+                    .statusCode(400)
+                    .body("__type", equalTo("SerializationException"));
+        }
+
+        // Omitting the member is not malformed: settings alone select the source.
+        String ok = cognitoJson("CreateUserPoolClient", """
+                {
+                  "UserPoolId": "%s",
+                  "ClientName": "malformed-flag-control"
+                }
+                """.formatted(poolId)).path("UserPoolClient").path("ClientId").asText();
+        cognitoAction("CreateManagedLoginBranding", """
+                {
+                  "UserPoolId": "%s",
+                  "ClientId": "%s",
+                  "Settings": {"components": {}}
+                }
+                """.formatted(poolId, ok))
+                .then()
+                .statusCode(200);
+    }
+
+    @Test
+    @Order(15)
     void deletePool() {
         cognitoAction("DeleteUserPool", """
                 {
