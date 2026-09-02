@@ -286,6 +286,51 @@ class TestCognitoLogDeliveryConfiguration:
                 LogConfigurations=[{"LogLevel": "ERROR", "EventSource": "userNotification"}],
             )
 
+    def test_set_rejects_more_than_two_configurations(self, cognito_client, pool_id):
+        """LogConfigurations is bounded at 2 entries."""
+        config = {
+            "LogLevel": "ERROR",
+            "EventSource": "userNotification",
+            "CloudWatchLogsConfiguration": {"LogGroupArn": self.LOG_GROUP_ARN},
+        }
+        with pytest.raises(cognito_client.exceptions.InvalidParameterException) as excinfo:
+            cognito_client.set_log_delivery_configuration(
+                UserPoolId=pool_id, LogConfigurations=[config, config, config]
+            )
+
+        assert "Member must have length less than or equal to 2" in str(excinfo.value)
+
+    def test_set_rejects_a_repeated_event_source(self, cognito_client, pool_id):
+        """An event source may appear at most once across the configurations."""
+        config = {
+            "LogLevel": "ERROR",
+            "EventSource": "userNotification",
+            "CloudWatchLogsConfiguration": {"LogGroupArn": self.LOG_GROUP_ARN},
+        }
+        with pytest.raises(cognito_client.exceptions.InvalidParameterException) as excinfo:
+            cognito_client.set_log_delivery_configuration(
+                UserPoolId=pool_id, LogConfigurations=[config, config]
+            )
+
+        assert "appear more then once in a request" in str(excinfo.value)
+
+    def test_a_rejected_request_leaves_the_configuration_alone(self, cognito_client, pool_id):
+        """An oversized request must not be stored."""
+        config = {
+            "LogLevel": "ERROR",
+            "EventSource": "userNotification",
+            "CloudWatchLogsConfiguration": {"LogGroupArn": self.LOG_GROUP_ARN},
+        }
+        with pytest.raises(cognito_client.exceptions.InvalidParameterException):
+            cognito_client.set_log_delivery_configuration(
+                UserPoolId=pool_id, LogConfigurations=[config, config, config]
+            )
+
+        stored = cognito_client.get_log_delivery_configuration(UserPoolId=pool_id)[
+            "LogDeliveryConfiguration"
+        ]
+        assert stored["LogConfigurations"] == []
+
 
 class TestCognitoDescribeUserPoolStandardAttributes:
     """DescribeUserPool must return all 20 standard OIDC attributes."""

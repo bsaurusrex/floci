@@ -71,11 +71,16 @@ Standalone `TagResource` rejects reserved `floci:*` keys. `ListTagsForResource` 
 | GetLogDeliveryConfiguration | Returns a user pool's log delivery configuration. |
 
 `LogLevel` accepts `ERROR` or `INFO`, and `EventSource` accepts `userNotification` or
-`userAuthEvents`. Each entry must name a destination: `CloudWatchLogsConfiguration`,
-`FirehoseConfiguration` or `S3Configuration`, and a request that omits one is rejected the
-way AWS rejects it. `Set` replaces the whole list rather than merging, so an empty
-`LogConfigurations` is what clears it, and `Get` always returns the member, as `[]` when
-nothing is configured.
+`userAuthEvents`. `LogConfigurations` holds at most 2 entries, and an event source may
+appear only once across them. Each entry must name a destination:
+`CloudWatchLogsConfiguration`, `FirehoseConfiguration` or `S3Configuration`, and a request
+that omits one is rejected the way AWS rejects it. `Set` replaces the whole list rather
+than merging, so an empty `LogConfigurations` is what clears it, and `Get` always returns
+the member, as `[]` when nothing is configured.
+
+The length and enum checks run before the pool is looked up, so an oversized or malformed
+request naming a pool that does not exist reports the request problem rather than
+`ResourceNotFoundException`, and every violation of them is reported in one message.
 
 Floci stores the configuration and never delivers anything to the destination: the log
 group, delivery stream or bucket is not written to, and is not required to exist. Two

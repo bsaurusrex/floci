@@ -300,6 +300,138 @@ class CognitoLogDeliveryConfigurationIntegrationTest {
 
     @Test
     @Order(12)
+    void setRejectsMoreThanTwoConfigurations() {
+        cognitoAction("SetLogDeliveryConfiguration", """
+                {
+                  "UserPoolId": "%s",
+                  "LogConfigurations": [
+                    {"LogLevel": "ERROR", "EventSource": "userNotification",
+                     "CloudWatchLogsConfiguration": {"LogGroupArn": "%s"}},
+                    {"LogLevel": "INFO", "EventSource": "userAuthEvents",
+                     "CloudWatchLogsConfiguration": {"LogGroupArn": "%s"}},
+                    {"LogLevel": "ERROR", "EventSource": "userNotification",
+                     "CloudWatchLogsConfiguration": {"LogGroupArn": "%s"}}
+                  ]
+                }
+                """.formatted(poolId, LOG_GROUP_ARN, LOG_GROUP_ARN, LOG_GROUP_ARN))
+                .then()
+                .statusCode(400)
+                .body("__type", equalTo("InvalidParameterException"))
+                .body("message", equalTo(
+                        "1 validation error detected: Value '["
+                                + cloudWatchConfig("ERROR", "userNotification") + ", "
+                                + cloudWatchConfig("INFO", "userAuthEvents") + ", "
+                                + cloudWatchConfig("ERROR", "userNotification")
+                                + "]' at 'logConfigurations' failed to satisfy constraint: "
+                                + "Member must have length less than or equal to 2"));
+    }
+
+    @Test
+    @Order(13)
+    void theLengthViolationIsReportedAlongsideElementViolations() {
+        cognitoAction("SetLogDeliveryConfiguration", """
+                {
+                  "UserPoolId": "%s",
+                  "LogConfigurations": [
+                    {"LogLevel": "ERROR", "EventSource": "userNotification",
+                     "CloudWatchLogsConfiguration": {"LogGroupArn": "%s"}},
+                    {"LogLevel": "BOGUS", "EventSource": "userAuthEvents",
+                     "CloudWatchLogsConfiguration": {"LogGroupArn": "%s"}},
+                    {"LogLevel": "ERROR", "EventSource": "userNotification",
+                     "CloudWatchLogsConfiguration": {"LogGroupArn": "%s"}}
+                  ]
+                }
+                """.formatted(poolId, LOG_GROUP_ARN, LOG_GROUP_ARN, LOG_GROUP_ARN))
+                .then()
+                .statusCode(400)
+                .body("__type", equalTo("InvalidParameterException"))
+                .body("message", equalTo(
+                        "2 validation errors detected: Value '["
+                                + cloudWatchConfig("ERROR", "userNotification") + ", "
+                                + cloudWatchConfig("BOGUS", "userAuthEvents") + ", "
+                                + cloudWatchConfig("ERROR", "userNotification")
+                                + "]' at 'logConfigurations' failed to satisfy constraint: "
+                                + "Member must have length less than or equal to 2; "
+                                + "Value 'BOGUS' at 'logConfigurations.2.member.logLevel' failed to satisfy "
+                                + "constraint: Member must satisfy enum value set: [ERROR, INFO]"));
+    }
+
+    @Test
+    @Order(14)
+    void shapeViolationsAreReportedBeforeTheMissingPool() {
+        cognitoAction("SetLogDeliveryConfiguration", """
+                {
+                  "UserPoolId": "us-east-1_nosuchpool",
+                  "LogConfigurations": [
+                    {"LogLevel": "BOGUS", "EventSource": "userNotification",
+                     "CloudWatchLogsConfiguration": {"LogGroupArn": "%s"}}
+                  ]
+                }
+                """.formatted(LOG_GROUP_ARN))
+                .then()
+                .statusCode(400)
+                .body("__type", equalTo("InvalidParameterException"))
+                .body("message", equalTo(
+                        "1 validation error detected: Value 'BOGUS' at "
+                                + "'logConfigurations.1.member.logLevel' failed to satisfy constraint: "
+                                + "Member must satisfy enum value set: [ERROR, INFO]"));
+    }
+
+    @Test
+    @Order(15)
+    void setRejectsARepeatedEventSource() {
+        cognitoAction("SetLogDeliveryConfiguration", """
+                {
+                  "UserPoolId": "%s",
+                  "LogConfigurations": [
+                    {"LogLevel": "ERROR", "EventSource": "userNotification",
+                     "CloudWatchLogsConfiguration": {"LogGroupArn": "%s"}},
+                    {"LogLevel": "INFO", "EventSource": "userNotification",
+                     "CloudWatchLogsConfiguration": {"LogGroupArn": "%s"}}
+                  ]
+                }
+                """.formatted(poolId, LOG_GROUP_ARN, LOG_GROUP_ARN))
+                .then()
+                .statusCode(400)
+                .body("__type", equalTo("InvalidParameterException"))
+                .body("message", equalTo(
+                        "Request validation Failed. Following event sources appear more then once "
+                                + "in a request: [userNotification]."));
+    }
+
+    @Test
+    @Order(16)
+    void aRepeatedEventSourceWithNoDestinationReportsBothClauses() {
+        cognitoAction("SetLogDeliveryConfiguration", """
+                {
+                  "UserPoolId": "%s",
+                  "LogConfigurations": [
+                    {"LogLevel": "ERROR", "EventSource": "userNotification"},
+                    {"LogLevel": "ERROR", "EventSource": "userNotification"}
+                  ]
+                }
+                """.formatted(poolId))
+                .then()
+                .statusCode(400)
+                .body("__type", equalTo("InvalidParameterException"))
+                .body("message", equalTo(
+                        "Request validation Failed. Following event sources in request have no "
+                                + "destination: [userNotification]. Following event sources appear "
+                                + "more then once in a request: [userNotification]."));
+    }
+
+    @Test
+    @Order(17)
+    void aRejectedOversizedRequestLeavesTheConfigurationAlone() throws Exception {
+        assertEquals(0, cognitoJson("GetLogDeliveryConfiguration", """
+                {
+                  "UserPoolId": "%s"
+                }
+                """.formatted(poolId)).path("LogDeliveryConfiguration").path("LogConfigurations").size());
+    }
+
+    @Test
+    @Order(18)
     void deletePool() {
         cognitoAction("DeleteUserPool", """
                 {
@@ -308,5 +440,11 @@ class CognitoLogDeliveryConfigurationIntegrationTest {
                 """.formatted(poolId))
                 .then()
                 .statusCode(200);
+    }
+
+    private static String cloudWatchConfig(String logLevel, String eventSource) {
+        return "LogConfigurationType(logLevel=" + logLevel + ", eventSource=" + eventSource
+                + ", cloudWatchLogsConfiguration=CloudWatchLogsConfigurationType(logGroupArn="
+                + LOG_GROUP_ARN + "), s3Configuration=null, firehoseConfiguration=null)";
     }
 }
