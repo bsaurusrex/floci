@@ -15,6 +15,8 @@ Floci serves pool-specific discovery and JWKS endpoints, plus a relaxed OAuth to
 
 Floci strips reserved `floci:*` tags from stored and returned `UserPoolTags` on both create and update paths, so the tag namespace acts as an input-only control channel and is never persisted as user-visible metadata.
 
+An action given a user pool id that does not resolve answers `ResourceNotFoundException` with the live service's own wording, `User pool <poolId> does not exist.`, rather than a generic string, so tooling that matches on Cognito error text behaves the same way locally.
+
 Standalone `TagResource` rejects reserved `floci:*` keys. `ListTagsForResource` and `UntagResource` operate on the persisted user-pool tag map.
 
 ## Supported Actions

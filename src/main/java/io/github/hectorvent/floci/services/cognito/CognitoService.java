@@ -358,7 +358,7 @@ public class CognitoService implements ResourceProvider {
 
     public UserPool describeUserPool(String id) {
         UserPool pool = poolStore.get(id)
-                .orElseThrow(() -> new AwsException("ResourceNotFoundException", "User pool not found", 400));
+                .orElseThrow(() -> userPoolNotFound(id));
         boolean generatedKeys = ensureJwtSigningKeys(pool);
         boolean generatedSecret = ensureRefreshTokenSecret(pool);
         if (generatedKeys || generatedSecret) {
@@ -1415,7 +1415,7 @@ public class CognitoService implements ResourceProvider {
 
     public CognitoUser adminGetUser(String userPoolId, String username) {
         UserPool pool = poolStore.get(userPoolId).orElseThrow(
-                () -> new AwsException("ResourceNotFoundException", "User pool not found", 400));
+                () -> userPoolNotFound(userPoolId));
         LinkedHashMap<String, CognitoUser> matches = new LinkedHashMap<>();
         userStore.get(userKey(userPoolId, username))
                 .ifPresent(u -> matches.put(u.getUsername(), u));
@@ -2034,8 +2034,7 @@ public class CognitoService implements ResourceProvider {
                 .orElseThrow(() -> new AwsException("ResourceNotFoundException", "Client not found",
                         400));
         UserPool pool = poolStore.get(client.getUserPoolId())
-                .orElseThrow(() -> new AwsException("ResourceNotFoundException",
-                        "User pool not found", 400));
+                .orElseThrow(() -> userPoolNotFound(client.getUserPoolId()));
         CognitoUser user = adminGetUser(client.getUserPoolId(), username);
         if (verificationCodeService != null && isSignUpConfirmationEnabled(pool)) {
             try {
@@ -3337,6 +3336,17 @@ public class CognitoService implements ResourceProvider {
         int end = json.indexOf('"', start);
         if (end < 0) return null;
         return json.substring(start, end);
+    }
+
+    /**
+     * The live service names the pool it could not find, and every action that resolves one
+     * answers with the same string. Measured in ap-southeast-1 against DescribeUserPool,
+     * ListUsers, ListGroups and ListUserPoolClients on an id that does not exist:
+     * {@code User pool ap-southeast-1_ZZZZZZZZZ does not exist.}
+     */
+    private static AwsException userPoolNotFound(String userPoolId) {
+        return new AwsException("ResourceNotFoundException",
+                "User pool " + userPoolId + " does not exist.", 400);
     }
 
     private String userKey(String poolId, String username) {
