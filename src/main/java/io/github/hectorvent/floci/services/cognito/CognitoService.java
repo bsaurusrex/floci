@@ -904,6 +904,11 @@ public class CognitoService implements ResourceProvider {
 
         String key = identityProviderKey(userPoolId, providerName);
         synchronized (identityProviderLock) {
+            // The pool was checked before the lock, so a DeleteUserPool that ran its
+            // cascade in between would leave this create writing a provider for a pool
+            // that no longer exists. Update needs no equivalent recheck: the cascade
+            // removes the provider, so its own lookup throws.
+            describeUserPool(userPoolId);
             if (identityProviderStore.get(key).isPresent()) {
                 throw new AwsException("DuplicateProviderException",
                         providerName + " already exists for tenant " + userPoolId + ".", 400);
