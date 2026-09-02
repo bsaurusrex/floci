@@ -18,7 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * SetUserPoolMfaConfig, and the round trip through GetUserPoolMfaConfig.
  *
  * <p>The response shape was measured against the live service, which returns only the
- * factors that have been configured: a pool with software-token MFA answers
+ * factors that have been configured — a pool with software-token MFA answers
  * {@code {"SoftwareTokenMfaConfiguration":{"Enabled":true},"MfaConfiguration":"OPTIONAL"}}
  * and omits the SMS, email and WebAuthn members entirely.
  */
@@ -174,7 +174,7 @@ class CognitoSetUserPoolMfaConfigIntegrationTest {
     @Order(10)
     void webAuthnIsOutsideTheFactorRulesInBothDirections() throws Exception {
         // Measured: WebAuthnConfiguration is accepted alongside OFF, where every other
-        // factor is rejected, and it does not satisfy the "must be enabled" rule either:
+        // factor is rejected, and it does not satisfy the "must be enabled" rule either —
         // OPTIONAL with WebAuthn alone is refused.
         JsonNode off = cognitoJson("SetUserPoolMfaConfig", """
                 {"UserPoolId":"%s","MfaConfiguration":"OFF",

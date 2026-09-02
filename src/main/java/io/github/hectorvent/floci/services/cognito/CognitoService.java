@@ -353,7 +353,7 @@ public class CognitoService implements ResourceProvider {
         }
         // Presence, not value: the live service rejects OFF alongside
         // SoftwareTokenMfaConfiguration{Enabled:false} just as it does Enabled:true, and
-        // conversely accepts ON alongside Enabled:false, so the member being there is what
+        // conversely accepts ON alongside Enabled:false — so the member being there is what
         // counts, despite the "must be enabled" wording of the second message.
         boolean anyFactorConfigured = softwareTokenMfaEnabled != null || otherFactorConfigured;
         if ("OFF".equals(mode) && anyFactorConfigured) {
@@ -368,7 +368,7 @@ public class CognitoService implements ResourceProvider {
         }
         pool.setMfaConfiguration(mode);
         if ("OFF".equals(mode)) {
-            // Turning MFA off drops the factor configuration with it: the live service
+            // Turning MFA off drops the factor configuration with it — the live service
             // answers OFF alone afterwards, with no SoftwareTokenMfaConfiguration member.
             pool.setSoftwareTokenMfaEnabled(null);
         } else if (softwareTokenMfaEnabled != null) {

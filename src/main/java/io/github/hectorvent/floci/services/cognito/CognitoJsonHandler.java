@@ -197,7 +197,7 @@ public class CognitoJsonHandler {
 
     /**
      * Shared by Get and Set, which answer with the same members. SoftwareTokenMfaConfiguration
-     * is omitted while unset, matching the live service, which returns only the factors that
+     * is omitted while unset, matching the live service — it returns only the factors that
      * have been configured.
      */
     private ObjectNode buildMfaConfigResponse(UserPool pool) {
