@@ -205,7 +205,10 @@ caller has no policy for, so it accepts both where AWS rejects the second with
 `AccessDeniedException`. Floci has no mechanism for fetching real AWS content, so a foreign
 layer's content is not mounted at `/opt` - a warning is logged at attach time and again at
 invoke. Publish your own copy of the content locally under a name you control if the handler
-needs it at runtime.
+needs it at runtime. A layer ARN outside the `aws` partition is rejected outright with
+`InvalidParameterValueException: Invalid layer version ...`, both on `GetLayerVersionByArn` and
+when attached to a function: partitions are isolated, so no resource policy can make such a layer
+readable, and Floci emulates the `aws` partition only.
 
 ## Not Implemented
 

@@ -498,17 +498,40 @@ public class LambdaLayerService {
      * resolving it inside the caller's own partition.
      */
     public boolean isForeignLayerArn(String layerVersionArn) {
+        AwsArnUtils.Arn arn = parseLayerVersionArn(layerVersionArn);
+        if (arn == null) {
+            return false;
+        }
+        return isForeignLayerArn(arn);
+    }
+
+    /**
+     * True when the ARN is a well-formed layer version ARN outside the {@code aws} partition.
+     * Partitions are isolated, so such a layer is unreachable rather than merely unreadable, and
+     * {@link #getLayerVersionByArn} already rejects it outright. Attaching one to a function has
+     * to reject too, or Floci would persist an ARN its own lookup path calls invalid.
+     */
+    public boolean isForeignPartitionLayerArn(String layerVersionArn) {
+        AwsArnUtils.Arn arn = parseLayerVersionArn(layerVersionArn);
+        if (arn == null) {
+            return false;
+        }
+        String partition = arn.partition();
+        return partition != null && !partition.isEmpty() && !"aws".equals(partition);
+    }
+
+    private AwsArnUtils.Arn parseLayerVersionArn(String layerVersionArn) {
         AwsArnUtils.Arn arn;
         try {
             arn = AwsArnUtils.parse(layerVersionArn);
         } catch (IllegalArgumentException e) {
-            return false;
+            return null;
         }
         String[] resourceParts = arn.resource().split(":");
         if (resourceParts.length < 3 || !"layer".equals(resourceParts[0])) {
-            return false;
+            return null;
         }
-        return isForeignLayerArn(arn);
+        return arn;
     }
 
     private boolean isForeignLayerArn(AwsArnUtils.Arn arn) {
