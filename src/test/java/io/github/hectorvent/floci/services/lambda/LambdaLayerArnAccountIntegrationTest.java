@@ -111,6 +111,22 @@ class LambdaLayerArnAccountIntegrationTest {
     }
 
     @Test
+    @Order(2)
+    void foreignPartitionArnIsRejectedWhenAttachedToAFunction() throws Exception {
+        // GetLayerVersionByArn already calls a non-aws partition invalid. Attaching one has to
+        // agree, or a function persists an ARN Floci's own lookup path rejects. A foreign account
+        // is different: a resource policy can make that layer readable, so it stays accepted.
+        createFunction("arn-account-foreign-partition",
+                "arn:aws-cn:lambda:cn-north-1:123456789012:layer:probe:1", 400);
+
+        given()
+        .when()
+            .get("/2015-03-31/functions/arn-account-foreign-partition")
+        .then()
+            .statusCode(404);
+    }
+
+    @Test
     @Order(3)
     void awsManagedLayerArnIsAcceptedAndEchoedVerbatim() throws Exception {
         createFunction("arn-account-managed", POWERTOOLS_ARN, 201);
