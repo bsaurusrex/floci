@@ -21,15 +21,15 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 /**
  * Layer version ARNs carry an account, and resolution has to honour it.
  *
- * <p>Measured against the live service in ap-southeast-1. Attaching an AWS-managed public layer
- * succeeds and the ARN is echoed verbatim; an ARN in another account whose layer name and version
- * match one of the caller's own is {@code AccessDeniedException}, never a substitution; and only
- * a missing layer in the caller's own account is
+ * <p>Measured against the live service in ap-southeast-1. An ARN in another account whose layer
+ * name and version match one of the caller's own is {@code AccessDeniedException}, never a
+ * substitution; a cross-partition ARN is the same {@code AccessDeniedException}; and only a
+ * missing layer in the caller's own account is
  * {@code InvalidParameterValueException: Layer version ... does not exist.}
  *
- * <p>Floci implements no layer permissions, so it cannot reproduce the AccessDenied case and
- * accepts a foreign ARN unresolved instead. What it must not do is resolve that ARN to a
- * same-named layer of the caller's own.
+ * <p>This class covers the default configuration, which answers every foreign ARN the way AWS
+ * answers a non-public one. {@code floci.services.lambda.accept-external-layer-arns} relaxes that
+ * for same-partition ARNs, covered by {@link LambdaExternalLayerArnAcceptedIntegrationTest}.
  */
 @QuarkusTest
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
@@ -113,11 +113,11 @@ class LambdaLayerArnAccountIntegrationTest {
     @Test
     @Order(2)
     void foreignPartitionArnIsRejectedWhenAttachedToAFunction() throws Exception {
-        // GetLayerVersionByArn already calls a non-aws partition invalid. Attaching one has to
-        // agree, or a function persists an ARN Floci's own lookup path rejects. A foreign account
-        // is different: a resource policy can make that layer readable, so it stays accepted.
-        createFunction("arn-account-foreign-partition",
-                "arn:aws-cn:lambda:cn-north-1:123456789012:layer:probe:1", 400);
+        // The live probe returns AccessDeniedException for a cross-partition ARN, identical to
+        // the foreign-account case, so this reports what was measured rather than reusing
+        // GetLayerVersionByArn's InvalidParameterValueException. Nothing is persisted either way.
+        String arn = "arn:aws-cn:lambda:cn-north-1:123456789012:layer:probe:1";
+        createFunction("arn-account-foreign-partition", arn, 403);
 
         given()
         .when()
@@ -128,22 +128,36 @@ class LambdaLayerArnAccountIntegrationTest {
 
     @Test
     @Order(3)
-    void awsManagedLayerArnIsAcceptedAndEchoedVerbatim() throws Exception {
-        createFunction("arn-account-managed", POWERTOOLS_ARN, 201);
+    void foreignAccountArnIsDeniedByDefaultAndTheFunctionIsNotCreated() throws Exception {
+        // Floci cannot tell a public layer from a private one without a layer permission model,
+        // so the default gives the answer AWS gives to everything but a public layer.
+        given()
+            .contentType("application/json")
+            .body("""
+                {
+                    "FunctionName": "arn-account-managed",
+                    "Runtime": "python3.12",
+                    "Role": "arn:aws:iam::000000000000:role/r",
+                    "Handler": "handler.handler",
+                    "Code": { "ZipFile": "%s" },
+                    "Layers": ["%s"]
+                }
+                """.formatted(zipBase64("handler.py", "def handler(e, c): return {}"), POWERTOOLS_ARN))
+        .when()
+            .post("/2015-03-31/functions")
+        .then()
+            .statusCode(403)
+            .body("__type", equalTo("AccessDeniedException"))
+            .body("message", equalTo(
+                "User is not authorized to perform: lambda:GetLayerVersion on resource: "
+                        + POWERTOOLS_ARN + " because no resource-based policy allows the"
+                        + " lambda:GetLayerVersion action"));
 
         given()
         .when()
             .get("/2015-03-31/functions/arn-account-managed")
         .then()
-            .statusCode(200)
-            .body("Configuration.Layers", hasSize(1))
-            .body("Configuration.Layers[0].Arn", equalTo(POWERTOOLS_ARN));
-
-        given()
-        .when()
-            .delete("/2015-03-31/functions/arn-account-managed")
-        .then()
-            .statusCode(204);
+            .statusCode(404);
     }
 
     @Test
@@ -173,7 +187,7 @@ class LambdaLayerArnAccountIntegrationTest {
 
     @Test
     @Order(5)
-    void updateFunctionConfigurationAcceptsAForeignAccountArn() throws Exception {
+    void updateFunctionConfigurationIsDeniedAndLeavesTheExistingLayerInPlace() throws Exception {
         String ownArn = publishLayer();
         createFunction("arn-account-update", ownArn, 201);
 
@@ -187,9 +201,17 @@ class LambdaLayerArnAccountIntegrationTest {
         .when()
             .put("/2015-03-31/functions/arn-account-update/configuration")
         .then()
+            .statusCode(403)
+            .body("__type", equalTo("AccessDeniedException"));
+
+        // A refused update must not have partially applied: the original layer is still attached.
+        given()
+        .when()
+            .get("/2015-03-31/functions/arn-account-update")
+        .then()
             .statusCode(200)
-            .body("Layers", hasSize(1))
-            .body("Layers[0].Arn", equalTo(POWERTOOLS_ARN));
+            .body("Configuration.Layers", hasSize(1))
+            .body("Configuration.Layers[0].Arn", equalTo(ownArn));
 
         given()
         .when()

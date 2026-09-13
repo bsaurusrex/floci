@@ -291,6 +291,7 @@ floci:
       container-idle-timeout-seconds: 300
       region-concurrency-limit: 1000
       unreserved-concurrency-min: 100
+      accept-external-layer-arns: false       # FLOCI_SERVICES_LAMBDA_ACCEPT_EXTERNAL_LAYER_ARNS - accept a Layers ARN from another account (content is never mounted). AWS answers these through the layer resource policy, which Floci does not model, so the default refuses them like AWS refuses a non-public one. Turn on to attach public layers such as Powertools.
       # aws-config-path:                      # Host path to bind-mount (read-only) at /opt/aws-config for real credential discovery
       # extra-hosts:                          # Extra /etc/hosts entries for Lambda containers, "hostname:ip" ("host-gateway" allowed as ip)
       # container-name-prefix: floci          # FLOCI_SERVICES_LAMBDA_CONTAINER_NAME_PREFIX — base name prefix for spawned containers and code volumes ([A-Za-z0-9][A-Za-z0-9_.-]*; invalid values fall back to "floci")
